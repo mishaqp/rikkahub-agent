@@ -42,25 +42,39 @@ if(LLAMAJNI_ENABLE_VULKAN)
             message(STATUS "Host SPIRV-Headers config: ${SPIRV-Headers_DIR}")
         endif()
 
-        # Android NDK ships the Vulkan C API, but not Vulkan-Hpp (vulkan.hpp),
-        # which ggml-vulkan also needs. Locate the host Vulkan-Headers package
-        # outside the Android find-root and stage only its vulkan/ subtree into
-        # the build directory. Do not add /usr/include directly to an Android
-        # compile, because that can leak host libc/C++ headers into the NDK build.
+        # Android NDK contains Vulkan C headers but not all host-side helper
+        # headers used by ggml-vulkan. Stage only the required pure-header
+        # subtrees instead of adding /usr/include to an Android target, which
+        # could accidentally leak host libc/C++ headers into the NDK build.
+        set(LLAMAJNI_HOST_VULKAN_HEADERS_STAGE "${CMAKE_CURRENT_BINARY_DIR}/host-vulkan-headers/include")
+        file(MAKE_DIRECTORY "${LLAMAJNI_HOST_VULKAN_HEADERS_STAGE}")
+
         find_path(LLAMAJNI_VULKAN_HPP_INCLUDE_DIR
             NAMES vulkan/vulkan.hpp
             PATHS /usr/include /usr/local/include "$ENV{VULKAN_SDK}/include"
             NO_CMAKE_FIND_ROOT_PATH
         )
         if(LLAMAJNI_VULKAN_HPP_INCLUDE_DIR)
-            set(LLAMAJNI_VULKAN_HPP_STAGE "${CMAKE_CURRENT_BINARY_DIR}/host-vulkan-headers/include")
-            file(MAKE_DIRECTORY "${LLAMAJNI_VULKAN_HPP_STAGE}")
             file(COPY "${LLAMAJNI_VULKAN_HPP_INCLUDE_DIR}/vulkan"
-                 DESTINATION "${LLAMAJNI_VULKAN_HPP_STAGE}")
+                 DESTINATION "${LLAMAJNI_HOST_VULKAN_HEADERS_STAGE}")
             message(STATUS "Staged Vulkan-Hpp headers from: ${LLAMAJNI_VULKAN_HPP_INCLUDE_DIR}")
         else()
             message(FATAL_ERROR
                 "Vulkan-Hpp header vulkan/vulkan.hpp was not found. Install Vulkan-Headers/libvulkan-dev or set VULKAN_SDK.")
+        endif()
+
+        find_path(LLAMAJNI_SPIRV_INCLUDE_DIR
+            NAMES spirv/unified1/spirv.hpp
+            PATHS /usr/include /usr/local/include "$ENV{VULKAN_SDK}/include"
+            NO_CMAKE_FIND_ROOT_PATH
+        )
+        if(LLAMAJNI_SPIRV_INCLUDE_DIR)
+            file(COPY "${LLAMAJNI_SPIRV_INCLUDE_DIR}/spirv"
+                 DESTINATION "${LLAMAJNI_HOST_VULKAN_HEADERS_STAGE}")
+            message(STATUS "Staged SPIR-V headers from: ${LLAMAJNI_SPIRV_INCLUDE_DIR}")
+        else()
+            message(FATAL_ERROR
+                "SPIR-V header spirv/unified1/spirv.hpp was not found. Install spirv-headers or set VULKAN_SDK.")
         endif()
     endif()
 endif()
@@ -71,8 +85,8 @@ endif()
 
 add_subdirectory(${LLAMA_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
-if(TARGET ggml-vulkan AND LLAMAJNI_VULKAN_HPP_STAGE)
-    target_include_directories(ggml-vulkan PRIVATE "${LLAMAJNI_VULKAN_HPP_STAGE}")
+if(TARGET ggml-vulkan AND LLAMAJNI_HOST_VULKAN_HEADERS_STAGE)
+    target_include_directories(ggml-vulkan PRIVATE "${LLAMAJNI_HOST_VULKAN_HEADERS_STAGE}")
 endif()
 
 add_library(llamajni SHARED llama_jni.cpp)

@@ -38,7 +38,7 @@ jobs:
             'keyAlias=androiddebugkey' \
             'keyPassword=android' > local.properties
       - name: Build arm64 debug APK
-        run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a -Parm64Only=true --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+        run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a -Parm64Only=true -Pandroid.injected.testOnly=false --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Stage the single arm64 debug APK
         shell: bash
         run: |
@@ -50,6 +50,15 @@ jobs:
           fi
           mkdir -p artifact
           cp "${apks[0]}" artifact/rikkahub-2.5.0-agent-arm64-v8a-debug.apk
+      - name: Verify APK is not test-only
+        shell: bash
+        run: |
+          aapt2_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -n 1)"
+          "$aapt2_path" dump badging artifact/rikkahub-2.5.0-agent-arm64-v8a-debug.apk | tee apk-badging.txt
+          if grep -q "testOnly=.true." apk-badging.txt; then
+            echo "::error::APK is still marked test-only"
+            exit 1
+          fi
       - name: Upload arm64 debug APK
         uses: actions/upload-artifact@v4
         with:

@@ -169,6 +169,10 @@ Java_me_rerere_llamacpp_LlamaCppJni_nativeApplyTemplate(
         // containing a supplementary-plane character, e.g. an emoji in a chat message.
         const std::string requestStr = byteArrayToUtf8(env, requestIn);
         const nlohmann::ordered_json request = nlohmann::ordered_json::parse(requestStr);
+        // llama.cpp v0.4.0 moved the chat parser boundary to common_json. Keep
+        // nlohmann here for the JNI request/output mapping, and parse one matching
+        // common_json view for the upstream chat and tool adapters.
+        const common_json commonRequest = common_json::parse(requestStr);
 
         // Reads the Jinja template out of the GGUF itself. Passing "" does not fail on a
         // model with no stored template: common_chat_templates_init (common/chat.cpp) falls
@@ -178,9 +182,9 @@ Java_me_rerere_llamacpp_LlamaCppJni_nativeApplyTemplate(
         common_chat_templates_ptr tmpls = common_chat_templates_init(model, "");
 
         common_chat_templates_inputs inputs;
-        inputs.messages = common_chat_msgs_parse_oaicompat(request.at("messages"));
+        inputs.messages = common_chat_msgs_parse_oaicompat(commonRequest.at("messages"));
         if (request.contains("tools") && !request.at("tools").is_null()) {
-            inputs.tools = common_chat_tools_parse_oaicompat(request.at("tools"));
+            inputs.tools = common_chat_tools_parse_oaicompat(commonRequest.at("tools"));
         }
         // Left at its default of "auto" the tool-call grammar permits zero calls, so the model
         // may always decline to call anything: chat.cpp derives both `min_calls` and whether

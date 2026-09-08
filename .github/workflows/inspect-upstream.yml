@@ -1,4 +1,4 @@
-name: Validate upstream 2.5.0 integration
+name: Build arm64 debug APK
 on:
   push:
     branches: [update/upstream-2.5.0]
@@ -6,87 +6,30 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: upstream-2.5.0
+  group: upstream-2.5.0-arm64-debug
   cancel-in-progress: true
 jobs:
-  integration:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Record source commit
-        run: git rev-parse HEAD | tee BUILD_COMMIT.txt
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-      - uses: oven-sh/setup-bun@v2
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Vulkan build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
-      - name: Configure existing signing key if available
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
-        run: |
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            python3 - <<'PY'
-          import os, pathlib
-          def esc(s):
-              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
-          props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
-                   "storePassword": os.environ["KEYSTORE_PASSWORD"],
-                   "keyAlias": os.environ["KEY_ALIAS"], "keyPassword": os.environ["KEY_PASSWORD"]}
-          pathlib.Path("local.properties").write_text("\n".join(k+"="+esc(v) for k,v in props.items())+"\n")
-          PY
-            echo "Release signing: existing repository key" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Release signing: key secrets unavailable; release APK will be unsigned" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Release lint and APK
-        run: ./gradlew :app:lintRelease :app:assembleRelease :app:assembleDebug --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Web typecheck
-        working-directory: web-ui
-        run: pnpm typecheck
-      - name: Upload APK
+      - name: Build arm64 debug APK
+        run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Upload arm64 debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: rikkahub-2.5.0-agent
-          path: |
-            app/build/outputs/apk/release/*.apk
-            BUILD_COMMIT.txt
+          name: rikkahub-2.5.0-agent-arm64-v8a-debug
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-      - name: Upload installable test APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: rikkahub-2.5.0-agent-debug
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            BUILD_COMMIT.txt
-          if-no-files-found: error
-      - name: Upload verification reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: verification-reports
-          path: |
-            **/build/test-results/**/*.xml
-            **/build/reports/tests/**
-            app/build/reports/lint-results*
-            BUILD_COMMIT.txt

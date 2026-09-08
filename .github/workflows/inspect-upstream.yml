@@ -21,10 +21,6 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Install Vulkan build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
       - name: Build arm64 debug APK
         run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Upload arm64 debug APK

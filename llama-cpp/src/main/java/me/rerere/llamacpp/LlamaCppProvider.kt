@@ -289,7 +289,11 @@ class LlamaCppProvider(
             // long conversation drops its oldest turns instead of overflowing the prompt.
             val trimmedMessages = ChatRequestMapper.trimToBudget(messages, runtime.inputBudgetBytes())
             val appliedTemplateJson = runtime.applyTemplate(
-                ChatRequestMapper.toRequestJson(trimmedMessages, params.tools)
+                ChatRequestMapper.toRequestJson(
+                    trimmedMessages,
+                    params.tools,
+                    enableThinking = params.reasoningLevel.isEnabled,
+                )
             )
             val tracker = ChatDeltaTracker()
             val accumulated = StringBuilder()

@@ -3,7 +3,6 @@ package me.rerere.rikkahub.ui.pages.setting.locallm
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,10 +24,7 @@ import me.rerere.locallm.litert.LiteRtModelMetadata
 import me.rerere.locallm.MemoryGuard
 import me.rerere.locallm.ModelInstall
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.api.HuggingFaceAPI
-import me.rerere.rikkahub.data.api.HuggingFaceModelSearch
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.model.HfModelSearchResult
 import okhttp3.OkHttpClient
 
 /**
@@ -48,7 +44,6 @@ class SettingLocalLlmViewModel(
     private val prefs: LocalRuntimePreferences,
     private val httpClient: OkHttpClient,
     private val settingsStore: SettingsStore,
-    private val hfApi: HuggingFaceAPI,
 ) : ViewModel() {
 
     data class Progress(val percent: Int, val bytesRead: Long, val totalBytes: Long?)
@@ -58,25 +53,6 @@ class SettingLocalLlmViewModel(
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
-
-    private val _hfSearchResults = MutableStateFlow<List<HfModelSearchResult>>(emptyList())
-    val hfSearchResults: StateFlow<List<HfModelSearchResult>> = _hfSearchResults.asStateFlow()
-
-    private val _hfSearchInProgress = MutableStateFlow(false)
-    val hfSearchInProgress: StateFlow<Boolean> = _hfSearchInProgress.asStateFlow()
-
-    /** Repo id the user tapped into, or null when the tile is showing search results.
-     *  Non-null with [hfSelectedRepoFiles] still null means the file listing is loading. */
-    private val _hfSelectedRepoId = MutableStateFlow<String?>(null)
-    val hfSelectedRepoId: StateFlow<String?> = _hfSelectedRepoId.asStateFlow()
-
-    private val _hfSelectedRepoFiles = MutableStateFlow<HuggingFaceModelSearch.FilesResult?>(null)
-    val hfSelectedRepoFiles: StateFlow<HuggingFaceModelSearch.FilesResult?> = _hfSelectedRepoFiles.asStateFlow()
-
-    // Tracks the in-flight coroutine for searchHuggingFace/selectHuggingFaceRepo so a stale
-    // response from a superseded call can't land after a newer one and overwrite its result.
-    private var hfSearchJob: Job? = null
-    private var hfSelectRepoJob: Job? = null
 
     private val _accelerator = MutableStateFlow<String?>(null)
     val accelerator: StateFlow<String?> = _accelerator.asStateFlow()
@@ -368,49 +344,6 @@ class SettingLocalLlmViewModel(
         viewModelScope.launch { executeDownload(normalizedUrl) }
     }
 
-    /**
-     * previously selected repo's file listing, since it belongs to the old search.
-     */
-    fun searchHuggingFace(query: String) {
-        _errorMessage.value = null
-        _hfSelectedRepoId.value = null
-        _hfSelectedRepoFiles.value = null
-        hfSearchJob?.cancel()
-        hfSearchJob = viewModelScope.launch {
-            _hfSearchInProgress.value = true
-            HuggingFaceModelSearch.search(hfApi, query)
-                .onSuccess { _hfSearchResults.value = it }
-                .onFailure {
-                    _hfSearchResults.value = emptyList()
-                    _errorMessage.value = context.getString(
-                        R.string.local_llm_hf_search_failed_format,
-                        it.message ?: it::class.simpleName ?: "",
-                    )
-                }
-            _hfSearchInProgress.value = false
-        }
-    }
-
-     *  as [HuggingFaceModelSearch.FilesResult.RequiresAccess]; see that type's doc for why
-     *  this never shows up as a failed or hanging download instead. */
-    fun selectHuggingFaceRepo(repoId: String) {
-        _hfSelectedRepoId.value = repoId
-        _hfSelectedRepoFiles.value = null
-        hfSelectRepoJob?.cancel()
-        hfSelectRepoJob = viewModelScope.launch {
-        }
-    }
-
-    fun clearHuggingFaceSelection() {
-        _hfSelectedRepoId.value = null
-        _hfSelectedRepoFiles.value = null
-    }
-
-    /** Install a file found via HuggingFace search through the same [startManualDownload]
-     *  path a pasted URL uses: [ModelInstall.download] already resumes and validates. */
-    fun installFromHuggingFace(repoId: String, fileName: String) {
-        startManualDownload(HuggingFaceModelSearch.resolveUrl(repoId, fileName))
-    }
 
     /**
      * Core download loop shared by [startDefaultDownload] and [startManualDownload].

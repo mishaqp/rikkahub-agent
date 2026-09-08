@@ -24,7 +24,7 @@ interface HuggingFaceAPI {
         @Query("limit") limit: Int,
     ): List<HfModelSearchResult>
 
-    /** [repoId] is `<owner>/<name>`, e.g. "Qwen/Qwen3-4B-GGUF"; `encoded = true` so the `/`
+    /** [repoId] is `<owner>/<name>`, e.g. "litert-community/Qwen2.5-1.5B-Instruct"; `encoded = true` so the `/`
      *  reaches HuggingFace as a real path separator instead of being percent-escaped. */
     @GET("api/models/{repoId}")
     suspend fun getModel(

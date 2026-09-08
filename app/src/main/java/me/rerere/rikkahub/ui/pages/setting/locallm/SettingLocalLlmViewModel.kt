@@ -222,7 +222,7 @@ class SettingLocalLlmViewModel(
             val knownModelIds = currentProvider.models.map { it.modelId }.toSet()
             val missing = finalInstalled.keys.filter { it !in knownModelIds }
             for (fileName in missing) {
-                val caps = deriveLocalModelCapabilities(LocalRuntime.LiteRT, fileName)
+                val caps = deriveLocalModelCapabilities(fileName)
                 val model = Model(
                     modelId = fileName,
                     displayName = fileName,
@@ -398,7 +398,7 @@ class SettingLocalLlmViewModel(
                 is ModelInstall.Progress.Done -> {
                     _downloadProgress.value = null
                     prefs.addInstalledModel(LocalRuntime.LiteRT, fileName, p.file.absolutePath)
-                    val caps = deriveLocalModelCapabilities(LocalRuntime.LiteRT, fileName)
+                    val caps = deriveLocalModelCapabilities(fileName)
                     val model = Model(
                         modelId = fileName,
                         displayName = fileName,

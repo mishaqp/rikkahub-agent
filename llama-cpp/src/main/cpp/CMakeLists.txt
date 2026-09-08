@@ -83,24 +83,52 @@ if(LLAMAJNI_ENABLE_OPENCL)
     set(GGML_OPENCL ON CACHE BOOL "" FORCE)
 endif()
 
-# Android's Vulkan loader does not export every post-1.0 command as a direct
-# ELF symbol on older API levels. ggml-vulkan already owns and initializes a
-# Vulkan-Hpp dynamic dispatcher, so route the remaining direct feature queries
-# through a small helper. This patch is idempotent because Gradle configures
-# multiple Android ABIs against the same submodule checkout.
+# Android API 26's Vulkan loader does not export every post-1.0 command as
+# a direct ELF symbol. ggml-vulkan already owns a Vulkan-Hpp dynamic dispatcher,
+# so route its three direct feature queries through that dispatcher. Gradle
+# configures multiple ABIs against one checkout; the helper marker makes this
+# configure-time compatibility patch idempotent.
 if(ANDROID AND LLAMAJNI_ENABLE_VULKAN)
     set(LLAMAJNI_GGML_VULKAN_SOURCE "${LLAMA_ROOT}/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
     file(READ "${LLAMAJNI_GGML_VULKAN_SOURCE}" LLAMAJNI_GGML_VULKAN_CONTENT)
 
-    string(REGEX MATCHALL "[\\n][ \\t]+vkGetPhysicalDeviceFeatures2\\(" LLAMAJNI_DIRECT_FEATURE_QUERIES
-           "${LLAMAJNI_GGML_VULKAN_CONTENT}")
-    list(LENGTH LLAMAJNI_DIRECT_FEATURE_QUERIES LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT)
+    set(LLAMAJNI_VULKAN_HELPER_MARKER
+        "static void ggml_vk_get_physical_device_features2_dynamic(")
+    string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                "${LLAMAJNI_VULKAN_HELPER_MARKER}"
+                LLAMAJNI_VULKAN_HELPER_POSITION)
 
-    string(REGEX MATCHALL "ggml_vk_get_physical_device_features2_dynamic\\("
-           LLAMAJNI_DYNAMIC_FEATURE_QUERIES "${LLAMAJNI_GGML_VULKAN_CONTENT}")
-    list(LENGTH LLAMAJNI_DYNAMIC_FEATURE_QUERIES LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT)
+    if(LLAMAJNI_VULKAN_HELPER_POSITION EQUAL -1)
+        set(LLAMAJNI_VULKAN_CALL_1
+            "vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);")
+        set(LLAMAJNI_VULKAN_CALL_2
+            "vkGetPhysicalDeviceFeatures2(physical_device, &device_features2);")
+        set(LLAMAJNI_VULKAN_CALL_3
+            "vkGetPhysicalDeviceFeatures2(vkdev, &device_features2);")
 
-    if(LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 3 AND LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT EQUAL 0)
+        foreach(LLAMAJNI_VULKAN_CALL IN ITEMS
+                "${LLAMAJNI_VULKAN_CALL_1}"
+                "${LLAMAJNI_VULKAN_CALL_2}"
+                "${LLAMAJNI_VULKAN_CALL_3}")
+            string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                        "${LLAMAJNI_VULKAN_CALL}"
+                        LLAMAJNI_VULKAN_CALL_POSITION)
+            if(LLAMAJNI_VULKAN_CALL_POSITION EQUAL -1)
+                message(FATAL_ERROR
+                    "Expected Vulkan call not found in ggml-vulkan: ${LLAMAJNI_VULKAN_CALL}")
+            endif()
+        endforeach()
+
+        string(REPLACE "${LLAMAJNI_VULKAN_CALL_1}"
+                       "ggml_vk_get_physical_device_features2_dynamic(device->physical_device, &device_features2);"
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        string(REPLACE "${LLAMAJNI_VULKAN_CALL_2}"
+                       "ggml_vk_get_physical_device_features2_dynamic(physical_device, &device_features2);"
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        string(REPLACE "${LLAMAJNI_VULKAN_CALL_3}"
+                       "ggml_vk_get_physical_device_features2_dynamic(vkdev, &device_features2);"
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+
         set(LLAMAJNI_VULKAN_HPP_INCLUDE "#include <vulkan/vulkan.hpp>")
         set(LLAMAJNI_VULKAN_DYNAMIC_HELPER [=[
 #include <vulkan/vulkan.hpp>
@@ -111,19 +139,16 @@ static void ggml_vk_get_physical_device_features2_dynamic(
     ggml_vk_default_dispatcher().vkGetPhysicalDeviceFeatures2(physical_device, features);
 }
 ]=])
-        # Replace upstream call sites before inserting the helper so the
-        # member call inside the helper is not rewritten recursively.
-        string(REPLACE "vkGetPhysicalDeviceFeatures2("
-                       "ggml_vk_get_physical_device_features2_dynamic("
-                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                    "${LLAMAJNI_VULKAN_HPP_INCLUDE}"
+                    LLAMAJNI_VULKAN_INCLUDE_POSITION)
+        if(LLAMAJNI_VULKAN_INCLUDE_POSITION EQUAL -1)
+            message(FATAL_ERROR "Vulkan-Hpp include marker not found in ggml-vulkan")
+        endif()
         string(REPLACE "${LLAMAJNI_VULKAN_HPP_INCLUDE}"
                        "${LLAMAJNI_VULKAN_DYNAMIC_HELPER}"
                        LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
         file(WRITE "${LLAMAJNI_GGML_VULKAN_SOURCE}" "${LLAMAJNI_GGML_VULKAN_CONTENT}")
-    elseif(NOT LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 0 OR
-           NOT LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT EQUAL 4)
-        message(FATAL_ERROR
-            "Unexpected ggml-vulkan feature-query layout: direct=${LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT}, dynamic=${LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT}. Review the Android Vulkan compatibility patch for this llama.cpp revision.")
     endif()
 endif()
 

@@ -23,6 +23,25 @@ set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 
 if(LLAMAJNI_ENABLE_VULKAN)
     set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+
+    # llama.cpp builds vulkan-shaders-gen with the host compiler while the
+    # Android libraries are cross-compiled with the NDK. CMake's Android
+    # find-root rules hide host packages, so explicitly discover the host
+    # SPIRV-Headers config without applying the NDK root path. The actual
+    # Vulkan library is still resolved from the Android NDK by llama.cpp.
+    if(CMAKE_CROSSCOMPILING AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+        find_path(LLAMAJNI_SPIRV_HEADERS_CONFIG_DIR
+            NAMES SPIRV-HeadersConfig.cmake
+            PATHS /usr/share /usr/local/share
+            PATH_SUFFIXES cmake/SPIRV-Headers
+            NO_CMAKE_FIND_ROOT_PATH
+        )
+        if(LLAMAJNI_SPIRV_HEADERS_CONFIG_DIR)
+            set(SPIRV-Headers_DIR "${LLAMAJNI_SPIRV_HEADERS_CONFIG_DIR}" CACHE PATH
+                "Host SPIRV-Headers package config used by llama.cpp Vulkan shader generation" FORCE)
+            message(STATUS "Host SPIRV-Headers config: ${SPIRV-Headers_DIR}")
+        endif()
+    endif()
 endif()
 
 if(LLAMAJNI_ENABLE_OPENCL)

@@ -83,6 +83,27 @@ if(LLAMAJNI_ENABLE_OPENCL)
     set(GGML_OPENCL ON CACHE BOOL "" FORCE)
 endif()
 
+# Android's Vulkan loader does not export every post-1.0 command as a direct
+# ELF symbol on older API levels. ggml-vulkan already owns and initializes a
+# Vulkan-Hpp dynamic dispatcher, so route the three remaining direct feature
+# queries through it. Keep this configure-time compatibility patch strict so
+# llama.cpp updates fail loudly if the upstream source shape changes.
+if(ANDROID AND LLAMAJNI_ENABLE_VULKAN)
+    set(LLAMAJNI_GGML_VULKAN_SOURCE "${LLAMA_ROOT}/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
+    file(READ "${LLAMAJNI_GGML_VULKAN_SOURCE}" LLAMAJNI_GGML_VULKAN_CONTENT)
+    string(REGEX MATCHALL "vkGetPhysicalDeviceFeatures2\\(" LLAMAJNI_DIRECT_FEATURE_QUERIES
+           "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+    list(LENGTH LLAMAJNI_DIRECT_FEATURE_QUERIES LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT)
+    if(NOT LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 3)
+        message(FATAL_ERROR
+            "Expected exactly 3 direct vkGetPhysicalDeviceFeatures2 calls in ggml-vulkan, found ${LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT}. Review the Android Vulkan compatibility patch for this llama.cpp revision.")
+    endif()
+    string(REPLACE "vkGetPhysicalDeviceFeatures2("
+                   "VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2("
+                   LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+    file(WRITE "${LLAMAJNI_GGML_VULKAN_SOURCE}" "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+endif()
+
 add_subdirectory(${LLAMA_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 
 if(TARGET ggml-vulkan AND LLAMAJNI_HOST_VULKAN_HEADERS_STAGE)

@@ -1,63 +1,98 @@
 name: release
-
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
   group: release
   cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Record source commit
+        run: git rev-parse HEAD | tee BUILD_COMMIT.txt
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Generate signing key
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: oven-sh/setup-bun@v2
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Configure existing signing key if available
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/release.keystore" \
-            -alias rikkahub -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass RikkaHubFork2026 -keypass RikkaHubFork2026 \
-            -dname "CN=RikkaHub Fork, OU=Agent, O=mishaqp, C=RU"
-          printf 'storeFile=%s\nstorePassword=RikkaHubFork2026\nkeyAlias=rikkahub\nkeyPassword=RikkaHubFork2026\n' "$RUNNER_TEMP/release.keystore" > local.properties
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build release APKs
-        run: ./gradlew assembleRelease --no-daemon
-
-      - name: Collect APKs
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            python3 - <<'PY'
+          import os, pathlib
+          def esc(s):
+              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+          props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
+                   "storePassword": os.environ["KEYSTORE_PASSWORD"],
+                   "keyAlias": os.environ["KEY_ALIAS"], "keyPassword": os.environ["KEY_PASSWORD"]}
+          pathlib.Path("local.properties").write_text("\n".join(k+"="+esc(v) for k,v in props.items())+"\n")
+          PY
+            echo "Release signing: existing repository key" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Configure KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD with one persistent signing key before publishing."
+            exit 1
+          fi
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Release lint and APK
+        run: ./gradlew :app:lintRelease :app:assembleRelease --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Web typecheck
+        working-directory: web-ui
+        run: pnpm typecheck
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-2.5.0-agent
+          path: |
+            app/build/outputs/apk/release/*.apk
+            BUILD_COMMIT.txt
+          if-no-files-found: error
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-reports
+          path: |
+            **/build/test-results/**/*.xml
+            **/build/reports/tests/**
+            app/build/reports/lint-results*
+            BUILD_COMMIT.txt
+      - name: Read release version
         run: |
-          mkdir -p dist
-          find app/build/outputs/apk -name '*.apk' -exec cp {} dist/ \;
-          ls -la dist/
-
-      - name: Create GitHub Release
+          python3 - <<'PY'
+          import os, pathlib, re
+          source = pathlib.Path("app/build.gradle.kts").read_text()
+          version = re.search(r'versionName = "([^"]+)"', source).group(1)
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("RELEASE_TAG=v"+version+"\n")
+          PY
+      - name: Publish signed release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.4.16-fork
-          name: rikkahub v2.4.16-fork
-          body: |
-            Автосборка личного форка (mishaqp/rikkahub-agent).
-            - Пакет: me.mishaqp.rikkahub (ставится рядом с оригиналом и форком ExTV)
-            - Имя: rikkahub
-          files: dist/*.apk
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: rikkahub ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: app/build/outputs/apk/release/*.apk

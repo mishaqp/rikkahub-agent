@@ -4,7 +4,7 @@ on:
     branches: [update/upstream-2.5.0]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: upstream-2.5.0
   cancel-in-progress: true
@@ -15,23 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          ref: update/upstream-2.5.0
-      - name: Integrate pinned upstream if needed
-        shell: bash
-        run: |
-          git config user.name "mishaqp"
-          git config user.email "84035331+mishaqp@users.noreply.github.com"
-          git fetch https://github.com/rikkahub/rikkahub.git 12ee935e0b0063dc3194d5145248795e071393cc
-          if ! git merge-base --is-ancestor FETCH_HEAD HEAD; then
-            git merge --no-commit --no-ff FETCH_HEAD || test -n "$(git diff --name-only --diff-filter=U)"
-            python3 .github/scripts/merge-upstream-2.5.0.py
-            git diff --cached --check
-            git commit -m "merge: integrate upstream 2.5.0 while preserving agent fork features"
-            git push origin HEAD:update/upstream-2.5.0
-          fi
-          git rev-parse HEAD | tee BUILD_COMMIT.txt
-          git submodule update --init --recursive
+          submodules: recursive
+      - name: Record source commit
+        run: git rev-parse HEAD | tee BUILD_COMMIT.txt
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -70,7 +56,7 @@ jobs:
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Release lint and APK
-        run: ./gradlew :app:lintRelease :app:assembleRelease --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+        run: ./gradlew :app:lintRelease :app:assembleRelease :app:assembleDebug --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Web typecheck
         working-directory: web-ui
         run: pnpm typecheck
@@ -80,6 +66,14 @@ jobs:
           name: rikkahub-2.5.0-agent
           path: |
             app/build/outputs/apk/release/*.apk
+            BUILD_COMMIT.txt
+          if-no-files-found: error
+      - name: Upload installable test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-2.5.0-agent-debug
+          path: |
+            app/build/outputs/apk/debug/*.apk
             BUILD_COMMIT.txt
           if-no-files-found: error
       - name: Upload verification reports

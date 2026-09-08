@@ -1106,8 +1106,8 @@ class ChatService(
             }
         }
 
-        val releaseForegroundWork = foregroundWorkTracker.acquire()
         val job = appScope.launch(start = CoroutineStart.LAZY) {
+            val releaseForegroundWork = foregroundWorkTracker.acquire()
             try {
                 awaitForegroundWorkReady()
                 afterPreviousGeneration(priorGenerationJob) {
@@ -3062,6 +3062,7 @@ class ChatService(
             if (!persistConversationSnapshot(conversationId, updatedConversation)) return@withLock
             updateConversation(conversationId, updatedConversation)
         }
+        dispatchNextQueuedMessage(conversationId)
     }
 
     /** Room write shared by explicit saves and stream snapshots. Caller holds the persistence mutex. */
@@ -3100,9 +3101,6 @@ class ChatService(
                 updateSearchIndex = updateSearchIndex,
             )
         }
-        // 删除消息或切换分支也可能解除工具审批阻塞，保存成功后重新检查队列。
-        // 调度器仍会检查当前生成任务、待审批工具、暂停状态及编辑占位。
-        dispatchNextQueuedMessage(conversationId)
         return true
     }
 

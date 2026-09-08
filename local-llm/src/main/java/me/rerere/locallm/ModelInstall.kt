@@ -83,7 +83,7 @@ object ModelInstall {
     fun targetFile(baseDir: File, runtime: LocalRuntime, fileName: String): File {
         val sub = when (runtime) {
             LocalRuntime.LiteRT -> "litert"
-            }
+        }
         return File(File(baseDir, sub), fileName)
     }
 
@@ -130,14 +130,6 @@ object ModelInstall {
                     firstBytes[4] == 0x54.toByte() && firstBytes[5] == 0x46.toByte() &&
                     firstBytes[6] == 0x4c.toByte() && firstBytes[7] == 0x33.toByte()
                 isLitertlm || isTflite
-            }
-            "gguf" -> {
-                // GGUF files start with the ASCII magic "GGUF"
-                // (0x47 0x47 0x55 0x46). A truncated download or an HTML error page
-                // served in its place falls through to this arm without it and was
-                // previously accepted as a model.
-                firstBytes[0] == 0x47.toByte() && firstBytes[1] == 0x47.toByte() &&
-                    firstBytes[2] == 0x55.toByte() && firstBytes[3] == 0x46.toByte()
             }
             else -> {
                 // Unknown extension — accept by default but reject obvious zeros / HTML.

@@ -85,23 +85,44 @@ endif()
 
 # Android's Vulkan loader does not export every post-1.0 command as a direct
 # ELF symbol on older API levels. ggml-vulkan already owns and initializes a
-# Vulkan-Hpp dynamic dispatcher, so route the three remaining direct feature
-# queries through it. Keep this configure-time compatibility patch strict so
-# llama.cpp updates fail loudly if the upstream source shape changes.
+# Vulkan-Hpp dynamic dispatcher, so route the remaining direct feature queries
+# through a small helper. This patch is idempotent because Gradle configures
+# multiple Android ABIs against the same submodule checkout.
 if(ANDROID AND LLAMAJNI_ENABLE_VULKAN)
     set(LLAMAJNI_GGML_VULKAN_SOURCE "${LLAMA_ROOT}/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
     file(READ "${LLAMAJNI_GGML_VULKAN_SOURCE}" LLAMAJNI_GGML_VULKAN_CONTENT)
+
     string(REGEX MATCHALL "vkGetPhysicalDeviceFeatures2\\(" LLAMAJNI_DIRECT_FEATURE_QUERIES
            "${LLAMAJNI_GGML_VULKAN_CONTENT}")
     list(LENGTH LLAMAJNI_DIRECT_FEATURE_QUERIES LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT)
-    if(NOT LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 3)
+
+    string(REGEX MATCHALL "ggml_vk_get_physical_device_features2_dynamic\\("
+           LLAMAJNI_DYNAMIC_FEATURE_QUERIES "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+    list(LENGTH LLAMAJNI_DYNAMIC_FEATURE_QUERIES LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT)
+
+    if(LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 3 AND LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT EQUAL 0)
+        set(LLAMAJNI_VULKAN_HPP_INCLUDE "#include <vulkan/vulkan.hpp>")
+        set(LLAMAJNI_VULKAN_DYNAMIC_HELPER [=[
+#include <vulkan/vulkan.hpp>
+
+static void ggml_vk_get_physical_device_features2_dynamic(
+        VkPhysicalDevice physical_device,
+        VkPhysicalDeviceFeatures2 * features) {
+    ggml_vk_default_dispatcher().vkGetPhysicalDeviceFeatures2(physical_device, features);
+}
+]=])
+        string(REPLACE "${LLAMAJNI_VULKAN_HPP_INCLUDE}"
+                       "${LLAMAJNI_VULKAN_DYNAMIC_HELPER}"
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        string(REPLACE "vkGetPhysicalDeviceFeatures2("
+                       "ggml_vk_get_physical_device_features2_dynamic("
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        file(WRITE "${LLAMAJNI_GGML_VULKAN_SOURCE}" "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+    elseif(NOT LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 0 OR
+           NOT LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT EQUAL 4)
         message(FATAL_ERROR
-            "Expected exactly 3 direct vkGetPhysicalDeviceFeatures2 calls in ggml-vulkan, found ${LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT}. Review the Android Vulkan compatibility patch for this llama.cpp revision.")
+            "Unexpected ggml-vulkan feature-query layout: direct=${LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT}, dynamic=${LLAMAJNI_DYNAMIC_FEATURE_QUERY_COUNT}. Review the Android Vulkan compatibility patch for this llama.cpp revision.")
     endif()
-    string(REPLACE "vkGetPhysicalDeviceFeatures2("
-                   "VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2("
-                   LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
-    file(WRITE "${LLAMAJNI_GGML_VULKAN_SOURCE}" "${LLAMAJNI_GGML_VULKAN_CONTENT}")
 endif()
 
 add_subdirectory(${LLAMA_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)

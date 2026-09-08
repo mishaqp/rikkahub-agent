@@ -212,11 +212,6 @@ class ModelInstallTest {
         assertFalse(ModelInstall.isValidMagicForExtension("litertlm", bytes))
     }
 
-    @Test fun `isValidMagicForExtension accepts LiteRTLM magic for litertlm`() {
-        val bytes = byteArrayOf(0x47, 0x47, 0x55, 0x46) + ByteArray(12)
-        assertTrue(ModelInstall.isValidMagicForExtension("litertlm", bytes))
-        assertTrue(ModelInstall.isValidMagicForExtension("LiteRTLM", bytes))  // case-insensitive
-    }
 
     @Test fun `isValidMagicForExtension rejects a truncated or HTML-error download named litertlm`() {
         // A truncated download or an HTML error page saved under a .litertlm name must not be

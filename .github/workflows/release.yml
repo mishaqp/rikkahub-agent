@@ -30,6 +30,9 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Set up pnpm
+        run: npm install --global pnpm@10
+
       - name: Generate signing key
         run: |
           keytool -genkeypair -v \

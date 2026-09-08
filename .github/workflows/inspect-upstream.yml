@@ -28,6 +28,33 @@ jobs:
           version: '10'
       - uses: oven-sh/setup-bun@v2
       - uses: gradle/actions/setup-gradle@v4
+      - name: Configure persistent debug signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Persistent signing secrets are not configured"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/debug.keystore"
+          python3 - <<'PY'
+          import os, pathlib
+          def esc(value):
+              return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+          props = {
+              "storeFile": os.environ["RUNNER_TEMP"] + "/debug.keystore",
+              "storePassword": os.environ["KEYSTORE_PASSWORD"],
+              "keyAlias": os.environ["KEY_ALIAS"],
+              "keyPassword": os.environ["KEY_PASSWORD"],
+          }
+          pathlib.Path("local.properties").write_text(
+              "\n".join(key + "=" + esc(value) for key, value in props.items()) + "\n"
+          )
+          PY
       - name: Build arm64 debug APK
         run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Stage the single arm64 debug APK

@@ -106,18 +106,18 @@ if(ANDROID AND LLAMAJNI_ENABLE_VULKAN)
         set(LLAMAJNI_VULKAN_CALL_3
             "vkGetPhysicalDeviceFeatures2(vkdev, &device_features2);")
 
-        foreach(LLAMAJNI_VULKAN_CALL IN ITEMS
-                "${LLAMAJNI_VULKAN_CALL_1}"
-                "${LLAMAJNI_VULKAN_CALL_2}"
-                "${LLAMAJNI_VULKAN_CALL_3}")
-            string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
-                        "${LLAMAJNI_VULKAN_CALL}"
-                        LLAMAJNI_VULKAN_CALL_POSITION)
-            if(LLAMAJNI_VULKAN_CALL_POSITION EQUAL -1)
-                message(FATAL_ERROR
-                    "Expected Vulkan call not found in ggml-vulkan: ${LLAMAJNI_VULKAN_CALL}")
-            endif()
-        endforeach()
+        string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                    "${LLAMAJNI_VULKAN_CALL_1}" LLAMAJNI_VULKAN_CALL_1_POSITION)
+        string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                    "${LLAMAJNI_VULKAN_CALL_2}" LLAMAJNI_VULKAN_CALL_2_POSITION)
+        string(FIND "${LLAMAJNI_GGML_VULKAN_CONTENT}"
+                    "${LLAMAJNI_VULKAN_CALL_3}" LLAMAJNI_VULKAN_CALL_3_POSITION)
+        if(LLAMAJNI_VULKAN_CALL_1_POSITION EQUAL -1 OR
+           LLAMAJNI_VULKAN_CALL_2_POSITION EQUAL -1 OR
+           LLAMAJNI_VULKAN_CALL_3_POSITION EQUAL -1)
+            message(FATAL_ERROR
+                "Expected direct Vulkan feature-query calls were not found in ggml-vulkan")
+        endif()
 
         string(REPLACE "${LLAMAJNI_VULKAN_CALL_1}"
                        "ggml_vk_get_physical_device_features2_dynamic(device->physical_device, &device_features2);"

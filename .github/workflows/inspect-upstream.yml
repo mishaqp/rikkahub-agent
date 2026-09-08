@@ -1,0 +1,28 @@
+name: Inspect upstream merge
+on:
+  push:
+    branches: [update/upstream-2.5.0]
+    paths: [.github/workflows/inspect-upstream.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect three-way merge without changing branches
+        shell: bash
+        run: |
+          git config user.name "mishaqp"
+          git config user.email "84035331+mishaqp@users.noreply.github.com"
+          git fetch https://github.com/rikkahub/rikkahub.git 12ee935e0b0063dc3194d5145248795e071393cc
+          git merge --no-commit --no-ff FETCH_HEAD || test -n "$(git diff --name-only --diff-filter=U)"
+          git diff --name-only --diff-filter=U
+          python3 - <<'PY'
+          import subprocess, pathlib, json
+          paths = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=U", "-z"]).decode().split("\0")
+          for path in filter(None, paths):
+              print("MERGE_CONFLICT_JSON=" + json.dumps({"path": path, "content": pathlib.Path(path).read_text()}))
+          PY

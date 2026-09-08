@@ -30,9 +30,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build arm64 debug APK
         run: ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Stage the single arm64 debug APK
+        shell: bash
+        run: |
+          mapfile -t apks < <(find . -type f -name '*.apk' -print)
+          printf 'APK: %s\n' "${apks[@]}"
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one APK, found ${#apks[@]}"
+            exit 1
+          fi
+          mkdir -p artifact
+          cp "${apks[0]}" artifact/rikkahub-2.5.0-agent-arm64-v8a-debug.apk
       - name: Upload arm64 debug APK
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-2.5.0-agent-arm64-v8a-debug
-          path: app/build/outputs/apk/**/*.apk
+          path: artifact/rikkahub-2.5.0-agent-arm64-v8a-debug.apk
           if-no-files-found: error

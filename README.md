@@ -225,3 +225,7 @@ This fork is unaffiliated with upstream RikkaHub maintainers. All credit for the
 ## License
 
 GNU AGPL-3.0, inherited from [upstream](https://github.com/rikkahub/rikkahub). See [LICENSE](LICENSE).
+
+## Upstream 2.5.0 integration
+
+Includes voice conversations, editable message queues, custom Responses API paths, Exa search updates, workspace image thumbnails and terminal improvements. Retains the fork's agent runtime, tool grants, compaction, local models and integrations.

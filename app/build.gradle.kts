@@ -19,8 +19,8 @@ android {
         applicationId = "me.mishaqp.rikkahub"
         minSdk = 26
         targetSdk = 37
-        versionCode = 183
-        versionName = "2.4.16"
+        versionCode = 184
+        versionName = "2.5.0-agent.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -78,7 +78,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
             optimization {
                 enable = true
             }

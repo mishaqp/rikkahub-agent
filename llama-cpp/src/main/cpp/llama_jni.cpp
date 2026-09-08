@@ -28,10 +28,11 @@ Java_me_rerere_llamacpp_LlamaCppJni_nativeLoadModel(JNIEnv *env, jobject, jstrin
         const std::string path = jstringToUtf8(env, pathIn);
 
         llama_model_params params = llama_model_default_params();
-        // Prefer full GPU offload when a compiled backend (Vulkan) is available. A negative
-        // layer count means all layers. If the driver/backend cannot load the model, retry on
-        // CPU so Vulkan remains an acceleration path rather than a hard runtime dependency.
-        params.n_gpu_layers = -1;
+        // Keep Android inference on the CPU. A Vulkan driver fault terminates the whole
+        // app process before a nullptr/exception fallback can run, so GPU offload must not be
+        // enabled implicitly. It can return later as an explicit opt-in after device probing
+        // is isolated from the main process.
+        params.n_gpu_layers = 0;
         // Default params already select mmap; set it explicitly since the field this
         // used to be (a plain use_mmap bool) was replaced by this enum in b10228.
         params.load_mode = LLAMA_LOAD_MODE_MMAP;

@@ -790,7 +790,19 @@ private fun WorkspaceFileCard(
                     onClick = onToggleExpand,
                     modifier = Modifier.size(28.dp),
                 ) {
-                    if (isImage) {
+                    Icon(
+                        imageVector = if (expanded) HugeIcons.ArrowDown01 else HugeIcons.ArrowRight01,
+                        contentDescription = stringResource(
+                            if (expanded) R.string.accessibility_collapse_folder else R.string.accessibility_expand_folder
+                        ),
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.size(28.dp))
+            }
+            if (isImage) {
                 val context = LocalContext.current
                 val imageRequest = remember(imageFile, entry.updatedAt, entry.sizeBytes) {
                     imageFile?.let {

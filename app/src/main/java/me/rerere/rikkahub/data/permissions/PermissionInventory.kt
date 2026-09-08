@@ -189,7 +189,7 @@ object PermissionInventory {
             )
         }
 
-        val protectionBase = info.protection
+        val protectionBase = info.protectionLevel and PermissionInfo.PROTECTION_MASK_BASE
         val isDangerous = protectionBase == PermissionInfo.PROTECTION_DANGEROUS
         val granted = ContextCompat.checkSelfPermission(context, perm) ==
             PackageManager.PERMISSION_GRANTED

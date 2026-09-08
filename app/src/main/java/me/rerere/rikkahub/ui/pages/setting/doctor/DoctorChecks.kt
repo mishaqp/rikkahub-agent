@@ -541,7 +541,7 @@ class DoctorChecks(
                     category = DoctorCategory.Services,
                     label = context.getString(R.string.doctor_check_tg_proxy),
                     detail = if (tg.proxyEnabled)
-                        context.getString(R.string.doctor_detail_tg_proxy_configured, tg.proxyType, tg.proxyHost, tg.proxyPort)
+                        context.getString(R.string.doctor_detail_tg_proxy_configured, tg.proxyType, tg.proxyHost, tg.proxyPort.toString())
                     else
                         context.getString(R.string.doctor_detail_tg_no_proxy),
                     severity = Severity.INFO,
@@ -1748,7 +1748,7 @@ class DoctorChecks(
             id = "diag.app",
             category = DoctorCategory.Diagnostics,
             label = context.getString(R.string.doctor_check_app_build),
-            detail = context.getString(R.string.doctor_detail_app_build, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, BuildConfig.DEBUG),
+            detail = context.getString(R.string.doctor_detail_app_build, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, BuildConfig.DEBUG.toString()),
             severity = Severity.INFO,
         ),
         DoctorCheck(

@@ -126,6 +126,11 @@ fun locationTool(context: Context): Tool = Tool(
                                 val client = LocationServices.getFusedLocationProviderClient(context)
                                 client.lastLocation.await()
                             } else null
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: SecurityException) {
+                            Log.w(TAG_LOC, "Location permission was revoked", e)
+                            null
                         } catch (t: Throwable) {
                             Log.w(TAG_LOC, "fused lastLocation failed", t)
                             null
@@ -153,6 +158,11 @@ fun locationTool(context: Context): Tool = Tool(
                                 withTimeoutOrNull(timeoutMs.toLong()) {
                                     client.getCurrentLocation(priority, null).await()
                                 }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: SecurityException) {
+                                Log.w(TAG_LOC, "Location permission was revoked", e)
+                                null
                             } catch (t: Throwable) {
                                 Log.w(TAG_LOC, "getCurrentLocation failed", t)
                                 null

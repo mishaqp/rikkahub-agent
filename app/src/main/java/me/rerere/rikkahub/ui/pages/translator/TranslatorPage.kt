@@ -248,7 +248,7 @@ private fun LanguageSelector(
             Locale.forLanguageTag("ar") -> stringResource(R.string.language_arabic)
             Locale.forLanguageTag("fa") -> stringResource(R.string.language_persian)
             Locale.forLanguageTag("ur") -> stringResource(R.string.language_urdu)
-            else -> locale.getDisplayLanguage(Locale.getDefault())
+            else -> locale.getDisplayLanguage(androidx.compose.ui.platform.LocalConfiguration.current.locales[0])
         }
     }
 

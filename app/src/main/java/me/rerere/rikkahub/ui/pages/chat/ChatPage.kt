@@ -633,7 +633,7 @@ private fun TopBar(
     val scope = rememberCoroutineScope()
     val toaster = LocalToaster.current
     // 与抽屉的 Rename 菜单项共享同一个重命名对话框状态，见 ChatDrawerVM.conversationToRename
-    val activity = LocalContext.current as ComponentActivity
+    val activity = androidx.activity.compose.LocalActivity.current as? ComponentActivity ?: return
     val drawerVm: ChatDrawerVM = koinViewModel(viewModelStoreOwner = activity)
 
     TopAppBar(

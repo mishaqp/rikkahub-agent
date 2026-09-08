@@ -20,6 +20,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
       - uses: oven-sh/setup-bun@v2
       - uses: gradle/actions/setup-gradle@v4
       - name: Build arm64 debug APK

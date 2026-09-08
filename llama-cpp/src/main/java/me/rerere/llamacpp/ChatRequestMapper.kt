@@ -18,9 +18,17 @@ import org.json.JSONObject
  */
 object ChatRequestMapper {
 
-    fun toRequestJson(messages: List<UIMessage>, tools: List<Tool>): String {
+    fun toRequestJson(
+        messages: List<UIMessage>,
+        tools: List<Tool>,
+        enableThinking: Boolean = true,
+    ): String {
         val root = JSONObject()
         root.put("messages", messagesArray(messages))
+        // Qwen3-family templates enable hidden reasoning by default when this field is absent.
+        // Pass the app's ReasoningLevel explicitly so CPU local inference does not spend the
+        // whole turn in an invisible thinking block when reasoning is OFF.
+        root.put("enable_thinking", enableThinking)
         // Absent rather than empty: an empty array makes some templates emit a tool
         // preamble describing no tools at all.
         if (tools.isNotEmpty()) {

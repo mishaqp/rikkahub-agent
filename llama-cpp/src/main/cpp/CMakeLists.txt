@@ -4,6 +4,7 @@ project(llamajni CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(LLAMAJNI_ENABLE_VULKAN "Build the Vulkan backend for GPU offload" OFF)
 option(LLAMAJNI_ENABLE_OPENCL "Build the OpenCL backend for Adreno GPUs" OFF)
 
 set(LLAMA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../native/llama.cpp)
@@ -19,6 +20,10 @@ set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
 
 set(GGML_OPENMP    OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+
+if(LLAMAJNI_ENABLE_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()
 
 if(LLAMAJNI_ENABLE_OPENCL)
     set(GGML_OPENCL ON CACHE BOOL "" FORCE)

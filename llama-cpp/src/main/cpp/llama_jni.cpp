@@ -28,13 +28,19 @@ Java_me_rerere_llamacpp_LlamaCppJni_nativeLoadModel(JNIEnv *env, jobject, jstrin
         const std::string path = jstringToUtf8(env, pathIn);
 
         llama_model_params params = llama_model_default_params();
-        // CPU only for now; the spec keeps GPU offload behind a CMake option.
-        params.n_gpu_layers = 0;
+        // Prefer full GPU offload when a compiled backend (Vulkan) is available. A negative
+        // layer count means all layers. If the driver/backend cannot load the model, retry on
+        // CPU so Vulkan remains an acceleration path rather than a hard runtime dependency.
+        params.n_gpu_layers = -1;
         // Default params already select mmap; set it explicitly since the field this
         // used to be (a plain use_mmap bool) was replaced by this enum in b10228.
         params.load_mode = LLAMA_LOAD_MODE_MMAP;
 
         llama_model *model = llama_model_load_from_file(path.c_str(), params);
+        if (model == nullptr) {
+            params.n_gpu_layers = 0;
+            model = llama_model_load_from_file(path.c_str(), params);
+        }
         if (model == nullptr) {
             throwJava(env, ("failed to load model: " + path).c_str());
             return 0L;

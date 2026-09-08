@@ -22,6 +22,7 @@ android {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
+                    "-DLLAMAJNI_ENABLE_VULKAN=ON",
                     "-DLLAMAJNI_ENABLE_OPENCL=OFF",
                 )
             }

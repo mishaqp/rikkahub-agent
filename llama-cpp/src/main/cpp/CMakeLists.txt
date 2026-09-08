@@ -111,11 +111,13 @@ static void ggml_vk_get_physical_device_features2_dynamic(
     ggml_vk_default_dispatcher().vkGetPhysicalDeviceFeatures2(physical_device, features);
 }
 ]=])
-        string(REPLACE "${LLAMAJNI_VULKAN_HPP_INCLUDE}"
-                       "${LLAMAJNI_VULKAN_DYNAMIC_HELPER}"
-                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        # Replace upstream call sites before inserting the helper so the
+        # member call inside the helper is not rewritten recursively.
         string(REPLACE "vkGetPhysicalDeviceFeatures2("
                        "ggml_vk_get_physical_device_features2_dynamic("
+                       LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
+        string(REPLACE "${LLAMAJNI_VULKAN_HPP_INCLUDE}"
+                       "${LLAMAJNI_VULKAN_DYNAMIC_HELPER}"
                        LLAMAJNI_GGML_VULKAN_CONTENT "${LLAMAJNI_GGML_VULKAN_CONTENT}")
         file(WRITE "${LLAMAJNI_GGML_VULKAN_SOURCE}" "${LLAMAJNI_GGML_VULKAN_CONTENT}")
     elseif(NOT LLAMAJNI_DIRECT_FEATURE_QUERY_COUNT EQUAL 0 OR

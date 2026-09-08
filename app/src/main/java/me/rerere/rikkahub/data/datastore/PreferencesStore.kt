@@ -81,14 +81,12 @@ private const val TAG = "PreferencesStore"
  * polymorphic [ProviderSetting] entries. A single-shot `decodeFromString<List<ProviderSetting>>`
  * throws on the entire list as soon as one element has an unknown polymorphic discriminator.
  *
- * Concrete trigger that motivated this: the never-shipped Phase-22A scaffolding seeded a
- * `"type":"local_llamacpp"` entry into DEFAULT_PROVIDERS for early test installs. Deleting
- * the `LlamaCppLocal` subclass would otherwise make decode-of-list throw on those entries
- * → user loses ALL their saved providers (API keys, custom models, the lot).
+ * Legacy provider entries can outlive a code upgrade that removes or renames a provider type.
+ * Decoding the whole list at once would make one stale discriminator discard every saved
+ * provider (API keys, custom models, the lot).
  *
  * Per-entry decode lets surviving entries land while the unknown one is logged and skipped.
- * Keep this even though `local_llamacpp` now ships: it's good hygiene for any future
- * polymorphic schema change (renamed types, removed types, etc).
+ * Keep this tolerant path for future polymorphic schema changes (renamed or removed types).
  */
 private fun decodeProvidersTolerant(raw: String): List<ProviderSetting> {
     if (raw.isBlank()) return emptyList()
@@ -550,15 +548,6 @@ class SettingsStore(
                             val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
                             providers.add(insertAt, defaultProvider.copyProvider())
                         }
-                        is ProviderSetting.LlamaCppLocal -> {
-                            // Insert right after LiteRtLocal, so it groups with the other
-                            // on-device provider instead of appending after every remote
-                            // provider below. Falls back to right after AICore, or 0, if
-                            // LiteRtLocal is absent - same absent-index fallback as above.
-                            val insertAt = providers.indexOfFirst { it is ProviderSetting.LiteRtLocal }
-                                .let { if (it >= 0) it + 1 else providers.indexOfFirst { p -> p is ProviderSetting.AICore } + 1 }
-                            providers.add(insertAt, defaultProvider.copyProvider())
-                        }
                         else -> providers.add(defaultProvider.copyProvider())
                     }
                 }
@@ -642,10 +631,6 @@ class SettingsStore(
                         )
 
                         is ProviderSetting.LiteRtLocal -> provider.copy(
-                            models = provider.models.distinctBy { model -> model.id }
-                        )
-
-                        is ProviderSetting.LlamaCppLocal -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
 

@@ -41,6 +41,27 @@ if(LLAMAJNI_ENABLE_VULKAN)
                 "Host SPIRV-Headers package config used by llama.cpp Vulkan shader generation" FORCE)
             message(STATUS "Host SPIRV-Headers config: ${SPIRV-Headers_DIR}")
         endif()
+
+        # Android NDK ships the Vulkan C API, but not Vulkan-Hpp (vulkan.hpp),
+        # which ggml-vulkan also needs. Locate the host Vulkan-Headers package
+        # outside the Android find-root and stage only its vulkan/ subtree into
+        # the build directory. Do not add /usr/include directly to an Android
+        # compile, because that can leak host libc/C++ headers into the NDK build.
+        find_path(LLAMAJNI_VULKAN_HPP_INCLUDE_DIR
+            NAMES vulkan/vulkan.hpp
+            PATHS /usr/include /usr/local/include "$ENV{VULKAN_SDK}/include"
+            NO_CMAKE_FIND_ROOT_PATH
+        )
+        if(LLAMAJNI_VULKAN_HPP_INCLUDE_DIR)
+            set(LLAMAJNI_VULKAN_HPP_STAGE "${CMAKE_CURRENT_BINARY_DIR}/host-vulkan-headers/include")
+            file(MAKE_DIRECTORY "${LLAMAJNI_VULKAN_HPP_STAGE}")
+            file(COPY "${LLAMAJNI_VULKAN_HPP_INCLUDE_DIR}/vulkan"
+                 DESTINATION "${LLAMAJNI_VULKAN_HPP_STAGE}")
+            message(STATUS "Staged Vulkan-Hpp headers from: ${LLAMAJNI_VULKAN_HPP_INCLUDE_DIR}")
+        else()
+            message(FATAL_ERROR
+                "Vulkan-Hpp header vulkan/vulkan.hpp was not found. Install Vulkan-Headers/libvulkan-dev or set VULKAN_SDK.")
+        endif()
     endif()
 endif()
 
@@ -49,6 +70,10 @@ if(LLAMAJNI_ENABLE_OPENCL)
 endif()
 
 add_subdirectory(${LLAMA_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
+
+if(TARGET ggml-vulkan AND LLAMAJNI_VULKAN_HPP_STAGE)
+    target_include_directories(ggml-vulkan PRIVATE "${LLAMAJNI_VULKAN_HPP_STAGE}")
+endif()
 
 add_library(llamajni SHARED llama_jni.cpp)
 

@@ -88,6 +88,9 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            if (signingConfigs.getByName("release").storeFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")

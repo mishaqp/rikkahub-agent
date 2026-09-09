@@ -97,9 +97,9 @@ jobs:
             BUILD_COMMIT.txt
       - name: Read release version
         run: |
-          python3 - -<<'PY'
+          python3 - <<'PY'
           import os, pathlib, re
-          source = pathlib.Path"app/build.gradle.kts").read_text()
+          source = pathlib.Path("app/build.gradle.kts").read_text()
           version = re.search(r'versionName = "([^"]+)"', source).group(1)
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write("RELEASE_TAG=v"+version+"\n")

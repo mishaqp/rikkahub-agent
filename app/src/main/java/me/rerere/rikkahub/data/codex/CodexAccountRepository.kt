@@ -97,6 +97,26 @@ class CodexAccountRepository internal constructor(
         error("No available Codex account")
     }
 
+    /**
+     * Acquire an authenticated account for non-generation calls such as model discovery.
+     * Quota exhaustion must not hide metadata: an account with 0% generation quota can still
+     * have a valid OAuth session and is allowed to call endpoints such as /models.
+     */
+    suspend fun acquireAccountForMetadata(): CodexAccount = mutex.withLock {
+        if (state.accounts.isEmpty()) error("No Codex account is signed in")
+        repeat(state.accounts.size) {
+            val index = selectCodexMetadataAccountIndex(
+                accounts = state.accounts,
+                startIndex = state.nextAccountIndex,
+            ) ?: error("No authenticated Codex account")
+            val candidate = state.accounts[index]
+            updateState(state.copy(nextAccountIndex = (index + 1) % state.accounts.size))
+            val fresh = runCatching { ensureFreshLocked(candidate) }.getOrNull() ?: return@repeat
+            return fresh
+        }
+        error("No authenticated Codex account")
+    }
+
     suspend fun updateUsage(accountId: String, usage: CodexUsageSnapshot) = mutex.withLock {
         replaceAccount(accountId) { it.copy(usage = usage) }
     }
@@ -253,6 +273,19 @@ internal fun selectCodexAccountIndex(
     repeat(accounts.size) { offset ->
         val index = (startIndex + offset).mod(accounts.size)
         if (accounts[index].isAvailable(nowMillis)) return index
+    }
+    return null
+}
+
+internal fun selectCodexMetadataAccountIndex(
+    accounts: List<CodexAccount>,
+    startIndex: Int,
+): Int? {
+    if (accounts.isEmpty()) return null
+    repeat(accounts.size) { offset ->
+        val index = (startIndex + offset).mod(accounts.size)
+        val account = accounts[index]
+        if (account.enabled && account.tokenStatus != CodexTokenStatus.INVALID) return index
     }
     return null
 }

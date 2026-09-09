@@ -22,14 +22,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Java 17
+       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Set up Gradle
+       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run AI, LiteRT and app unit tests
@@ -41,3 +39,65 @@ jobs:
           --no-daemon
           --max-workers=2
           -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
+  build-release:
+    name: Build release APK + AAB (arm64)
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+       - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+       - name: Configure release signing if secrets available
+        if: env.KEYSTORE_BASE64 != '' && env.KEYSTORE_PASSWORD != '' && env.KEY_ALIAS != '' && env.KEY_PASSWORD != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          cat > local.properties <<EOF
+storeFile=$RUNNER_TEMP/release.keystore
+storePassword=$KEYSTORE_PASSWORD
+keyAlias=$KEY_ALIAS
+keyPassword=$KEY_PASSWORD
+EOF
+          echo "Release signing: using repository secrets" >> $GITHUB_STEP_SUMMARY
+
+      - name: Build arm64 release APK
+        run: ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
+      - name: Build arm64 release AAB
+        run: ./gradlew :app:bundleRelease -Parm64Only=true --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+      - name: Upload ABB
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-release-aab
+          path: app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+      - name: Verify APK not test-only
+        shell: bash
+        run: |
+          aapt2_path="$(find "\$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -n 1)"
+          "$aapt2_path" dump badging app/build/outputs/apk/release/*.apk | tee apk-badging.txt
+          if grep -q "testOnly=.true." apk-badging.txt; then
+            echo "::"rror"::APK is still marked test-only"
+            exit 1
+          fi

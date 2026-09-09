@@ -48,7 +48,10 @@ class CodexProvider(
 
     override suspend fun listModels(providerSetting: ProviderSetting.Codex): List<Model> =
         withContext(Dispatchers.IO) {
-            val account = repository.acquireAccount()
+            // Model discovery only needs a valid OAuth session. It must keep working when the
+            // generation quota is exhausted, otherwise the Models tab incorrectly reports
+            // "No available Codex account" while the account is still signed in.
+            val account = repository.acquireAccountForMetadata()
             val request = Request.Builder()
                 .url("$CODEX_API_BASE/models?client_version=$CLIENT_VERSION")
                 .codexHeaders(account)
@@ -227,13 +230,11 @@ class CodexProvider(
 
     private companion object {
         const val CODEX_API_BASE = "${CodexAccountRepository.CODEX_BASE_URL}/codex"
-        const val CLIENT_VERSION = "0.144.5"
+        const val CLIENT_VERSION = "0.153.4"
 
-        // The Codex backend routes newer models (e.g. gpt-5.6-luna, which is gated on
-        // minimal_client_version 0.144.0) by the codex version advertised in the User-Agent, not
-        // just the `client_version` query param on /models. Without a codex-shaped UA the backend
-        // resolves the public slug to an unavailable internal engine and returns 404 "Model not
-        // found". Mirror the codex CLI's UA format: "<originator>/<version> (<os>; <arch>)".
+        // The Codex backend routes model availability using the advertised Codex client version
+        // and User-Agent. Keep both aligned with a current stable Codex CLI release so newly
+        // eligible models are not hidden behind an obsolete minimum-client-version gate.
         val CODEX_USER_AGENT =
             "codex_cli_rs/$CLIENT_VERSION (Android ${Build.VERSION.RELEASE}; " +
                 "${Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64"})"

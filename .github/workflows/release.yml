@@ -72,7 +72,22 @@ jobs:
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Release lint
         timeout-minutes: 20
-        run: ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          (
+            while sleep 120; do
+              date -u >> ci-diagnostics/lint-processes.txt
+              free -m >> ci-diagnostics/lint-processes.txt
+              ps -eo pid,ppid,pcpu,pmem,rss,etime,comm --sort=-rss | head -20 >> ci-diagnostics/lint-processes.txt
+              for lint_pid in $(jps -q); do
+                timeout 15s jcmd "$lint_pid" Thread.print >> ci-diagnostics/lint-threads.txt 2>&1 || true
+              done
+            done
+          ) &
+          lint_monitor=$!
+          trap 'kill "$lint_monitor" 2>/dev/null || true' EXIT
+          ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" 2>&1 | tee ci-diagnostics/lint.log
       - name: Build arm64 release APK
         timeout-minutes: 25
         run: ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
@@ -96,6 +111,7 @@ jobs:
             **/build/test-results/**/*.xml
             **/build/reports/tests/**
             app/build/reports/lint-results*
+            ci-diagnostics/
             BUILD_COMMIT.txt
       - name: Read release version
         run: |

@@ -219,7 +219,7 @@ private fun ChatHeatmap(conversationsPerDay: Map<LocalDate, Int>) {
                                 text = if (labelDate.monthValue == 1) {
                                     labelDate.year.toString()
                                 } else {
-                                    labelDate.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+                                    labelDate.month.getDisplayName(TextStyle.SHORT, androidx.compose.ui.platform.LocalConfiguration.current.locales[0])
                                 },
                                 modifier = Modifier.wrapContentWidth(unbounded = true),
                                 style = MaterialTheme.typography.labelSmall,

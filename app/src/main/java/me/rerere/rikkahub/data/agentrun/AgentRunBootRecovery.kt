@@ -103,6 +103,11 @@ class AgentRunBootRecovery(
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setAutoCancel(true)
+                if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        context, android.Manifest.permission.POST_NOTIFICATIONS
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) return@runCatching
                 NotificationManagerCompat.from(context).notify(AGGREGATE_NOTIF_ID, builder.build())
             }.onFailure {
                 // POST_NOTIFICATIONS not granted, or notifications restricted — non-fatal.

@@ -4,6 +4,8 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.io.FileInputStream
 import java.util.Properties
 
+val arm64Only = providers.gradleProperty("arm64Only").orNull == "true"
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -19,13 +21,13 @@ android {
         applicationId = "me.mishaqp.rikkahub"
         minSdk = 26
         targetSdk = 37
-        versionCode = 183
-        versionName = "2.4.16"
+        versionCode = 184
+        versionName = "2.5.0-agent.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += if (arm64Only) listOf("arm64-v8a") else listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -34,7 +36,7 @@ android {
             // AppBundle tasks usually contain "bundle" in their name
             //noinspection WrongGradleMethod
             val isBuildingBundle = gradle.startParameter.taskNames.any { it.lowercase().contains("bundle") }
-            isEnable = !isBuildingBundle
+            isEnable = !isBuildingBundle && !arm64Only
             reset()
             include("arm64-v8a", "x86_64")
             isUniversalApk = true
@@ -78,7 +80,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
             optimization {
                 enable = true
             }
@@ -88,6 +90,9 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            if (signingConfigs.getByName("release").storeFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")
@@ -117,6 +122,7 @@ android {
         }
     }
     lint {
+        baseline = file("lint-baseline.xml")
         // FullBackupContent insists every <exclude> path lives under a previously
         // <include>'d root. Our backup_rules.xml + data_extraction_rules.xml use
         // include="upload/" + explicit excludes for databases / sharedpref /

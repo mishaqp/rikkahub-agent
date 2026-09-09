@@ -27,6 +27,8 @@ import me.rerere.rikkahub.R
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -99,6 +101,15 @@ class CodexOAuthManager(
         callbackPort?.let { return it }
         var lastError: Throwable? = null
         for (port in CALLBACK_PORTS) {
+            // CIO starts its accept loop asynchronously. If the port is already occupied,
+            // start(wait = false) can return before the bind failure is reported, which means
+            // the try/catch below cannot reliably fall back to the second allow-listed port.
+            // Probe the loopback bind synchronously first, matching current Codex CLI behavior:
+            // 1455 is preferred and 1457 is the registered fallback redirect port.
+            if (!isLoopbackPortAvailable(port)) {
+                lastError = java.net.BindException("127.0.0.1:$port is already in use")
+                continue
+            }
             try {
                 server = embeddedServer(CIO, host = "127.0.0.1", port = port) {
                     routing {
@@ -155,6 +166,16 @@ class CodexOAuthManager(
             }
         }
         throw IllegalStateException(CALLBACK_PORTS_UNAVAILABLE, lastError)
+    }
+
+    private fun isLoopbackPortAvailable(port: Int): Boolean {
+        return runCatching {
+            ServerSocket().use { socket ->
+                socket.reuseAddress = false
+                socket.bind(InetSocketAddress("127.0.0.1", port))
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private suspend fun awaitNetworkUnblocked() {

@@ -7,7 +7,7 @@ permissions:
   contents: write
 concurrency:
   group: release
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -70,8 +70,12 @@ jobs:
           fi
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Release lint and APK
-        run: ./gradlew :app:lintRelease :app:assembleRelease --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Release lint
+        timeout-minutes: 20
+        run: ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Build arm64 release APK
+        timeout-minutes: 25
+        run: ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Web typecheck
         working-directory: web-ui
         run: pnpm typecheck

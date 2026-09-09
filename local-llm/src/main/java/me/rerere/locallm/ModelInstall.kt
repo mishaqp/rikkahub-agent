@@ -382,18 +382,18 @@ object ModelInstall {
                     // InputStream.read(ByteArray) is only guaranteed to return at least one
                     // byte, not four — a network-backed SAF provider (Google Drive and
                     // similar) can hand back 1-3 bytes on the very first read. Accumulate
-                    // across reads into a dedicated 4-byte buffer until either 4 bytes are
+                    // across reads into a dedicated 8-byte buffer until either 8 bytes are
                     // in hand or the stream hits EOF, then validate once. Every byte read
                     // during accumulation is still written to sink below, so the copy stays
                     // byte-exact regardless of how the reads happen to chunk.
-                    val sniffBuf = ByteArray(4)
+                    val sniffBuf = ByteArray(8)
                     var sniffLen = 0
                     var sniffed = false
                     var totalRead = 0L
                     while (true) {
                         val n = source.read(buf)
                         if (n <= 0) {
-                            // EOF before 4 bytes accumulated (including a 0-byte file, where
+                            // EOF before 8 bytes accumulated (including a 0-byte file, where
                             // sniffLen stays 0): validate whatever was collected.
                             // isValidMagicForExtension rejects anything shorter than 4 bytes.
                             if (!sniffed) {
@@ -408,10 +408,10 @@ object ModelInstall {
                         totalRead += n
                         emit(Progress.Tick(totalRead, totalBytes))
                         if (!sniffed) {
-                            val need = (4 - sniffLen).coerceAtMost(n)
+                            val need = (8 - sniffLen).coerceAtMost(n)
                             System.arraycopy(buf, 0, sniffBuf, sniffLen, need)
                             sniffLen += need
-                            if (sniffLen >= 4) {
+                            if (sniffLen >= 8) {
                                 sniffed = true
                                 if (!isValidMagicForExtension(expectedExtension, sniffBuf)) {
                                     invalidMagic = true

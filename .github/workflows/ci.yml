@@ -5,6 +5,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -86,7 +87,8 @@ EOF
           name: rikkahub-release-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-      - name: Upload ABB
+
+      - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-release-aab
@@ -98,6 +100,6 @@ EOF
           aapt2_path="$(find "\$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -n 1)"
           "$aapt2_path" dump badging app/build/outputs/apk/release/*.apk | tee apk-badging.txt
           if grep -q "testOnly=.true." apk-badging.txt; then
-            echo "::"rror"::APK is still marked test-only"
+            echo "::error::APK is still marked test-only"
             exit 1
           fi

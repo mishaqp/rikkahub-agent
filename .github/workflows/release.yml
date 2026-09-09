@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
-      - name: Configure existing signing key if available
+      - name: Configure release signing (requires secrets)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -42,71 +42,49 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         shell: bash
         run: |
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            python3 - <<'PY'
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Release signing secrets not configured. Add KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD to repository secrets."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          python3 - <<'PY'
           import os, pathlib
           def esc(s):
-              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+              return s.replace("\\", "\\\\\\").replace("\n", "\\n").replace("\r", "\\r")
           props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
                    "storePassword": os.environ["KEYSTORE_PASSWORD"],
                    "keyAlias": os.environ["KEY_ALIAS"], "keyPassword": os.environ["KEY_PASSWORD"]}
           pathlib.Path("local.properties").write_text("\n".join(k+"="+esc(v) for k,v in props.items())+"\n")
           PY
-            echo "Release signing: existing repository key" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::Persistent release secrets are unavailable; using the repository's persistent public test key."
-            base64 -d .github/debug-signing.p12.b64 > "$RUNNER_TEMP/release.keystore"
-            python3 - <<'PY'
-          import os, pathlib
-          def esc(s):
-              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
-          props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
-                   "storePassword": "android",
-                   "keyAlias": "androiddebugkey", "keyPassword": "android"}
-          pathlib.Path("local.properties").write_text("\n".join(k+"="+esc(v) for k,v in props.items())+"\n")
-          PY
-            echo "Release signing: persistent repository test key" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "Release signing: using repository secrets" >> "$GITHUB_STEP_SUMMARY"
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Release lint
-        timeout-minutes: 20
-        shell: bash
-        run: |
-          mkdir -p ci-diagnostics
-          (
-            while sleep 120; do
-              date -u >> ci-diagnostics/lint-processes.txt
-              free -m >> ci-diagnostics/lint-processes.txt
-              ps -eo pid,ppid,pcpu,pmem,rss,etime,comm --sort=-rss | head -20 >> ci-diagnostics/lint-processes.txt
-              for lint_pid in $(jps -q); do
-                timeout 15s jcmd "$lint_pid" Thread.print >> ci-diagnostics/lint-threads.txt 2>&1 || true
-              done
-            done
-          ) &
-          lint_monitor=$!
-          trap 'kill "$lint_monitor" 2>/dev/null || true' EXIT
-          ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" 2>&1 | tee ci-diagnostics/lint.log
+      - name: Release lint (fixed memory)
+        timeout-minutes: 30
+        run: ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=1 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
       - name: Build arm64 release APK
         timeout-minutes: 25
         run: ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Build arm64 release AAB
+        timeout-minutes: 25
+        run: ./gradlew :app:bundleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Web typecheck
         working-directory: web-ui
         run: pnpm typecheck
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: rikkahub-2.5.0-agent
+          name: rikkahub-release-apk
           path: |
             app/build/outputs/apk/release/*.apk
             BUILD_COMMIT.txt
           if-no-files-found: error
-      - name: Print lint diagnostics on failure
-        if: failure()
-        run: |
-          tail -80 ci-diagnostics/lint-processes.txt || true
-          tail -2500 ci-diagnostics/lint-threads.txt || true
+      - name: Upload ABB
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-release-aab
+          path: app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,13 +94,12 @@ jobs:
             **/build/test-results/**/*.xml
             **/build/reports/tests/**
             app/build/reports/lint-results*
-            ci-diagnostics/
             BUILD_COMMIT.txt
       - name: Read release version
         run: |
-          python3 - <<'PY'
+          python3 - -<<'PY'
           import os, pathlib, re
-          source = pathlib.Path("app/build.gradle.kts").read_text()
+          source = pathlib.Path"app/build.gradle.kts").read_text()
           version = re.search(r'versionName = "([^"]+)"', source).group(1)
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write("RELEASE_TAG=v"+version+"\n")
@@ -134,4 +111,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: rikkahub ${{ env.RELEASE_TAG }}
           generate_release_notes: true
-          files: app/build/outputs/apk/release/*.apk
+          files: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab

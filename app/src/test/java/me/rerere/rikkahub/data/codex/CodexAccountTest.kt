@@ -121,6 +121,23 @@ class CodexAccountTest {
     }
 
     @Test
+    fun `metadata account selection ignores exhausted quota`() {
+        val accounts = listOf(
+            account("disabled", enabled = false),
+            account("invalid", status = CodexTokenStatus.INVALID),
+            account(
+                "exhausted-but-signed-in",
+                usage = CodexUsageSnapshot(
+                    primary = CodexUsageWindow(usedPercent = 100.0, resetsAt = 2_000_000_000)
+                )
+            ),
+        )
+
+        assertEquals(2, selectCodexMetadataAccountIndex(accounts, startIndex = 0))
+        assertNull(selectCodexMetadataAccountIndex(accounts.take(2), startIndex = 0))
+    }
+
+    @Test
     fun `auto reasoning omits Codex effort`() {
         assertNull(codexReasoningEffort(ReasoningLevel.AUTO))
         assertEquals("high", codexReasoningEffort(ReasoningLevel.HIGH))

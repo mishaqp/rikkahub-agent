@@ -123,6 +123,10 @@ android {
     }
     lint {
         baseline = file("lint-baseline.xml")
+        // Keep actionable CI reports without the expensive HTML rendering stage.
+        htmlReport = false
+        xmlReport = true
+        textReport = true
         // FullBackupContent insists every <exclude> path lives under a previously
         // <include>'d root. Our backup_rules.xml + data_extraction_rules.xml use
         // include="upload/" + explicit excludes for databases / sharedpref /

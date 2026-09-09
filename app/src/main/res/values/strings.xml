@@ -1744,21 +1744,6 @@
   <string name="local_llm_catalog_tag_thinking">Thinking</string>
   <string name="local_llm_catalog_tag_speculative">Speculative decoding</string>
   <string name="local_llm_catalog_tag_tools">Tools</string>
-  <string name="local_llm_llamacpp_catalog_title">Available models</string>
-  <string name="local_llm_llamacpp_catalog_subtitle">Curated GGUF models with a tool-calling chat template. Pick one for one-tap install.</string>
-  <string name="local_llm_llamacpp_import_action">Install a GGUF you already have</string>
-  <string name="local_llm_hf_search_title">Search HuggingFace</string>
-  <string name="local_llm_hf_search_placeholder">Model name, e.g. Qwen3</string>
-  <string name="local_llm_hf_search_action">Search</string>
-  <string name="local_llm_hf_search_no_results">No GGUF repos found</string>
-  <string name="local_llm_hf_search_failed_format">Search failed: %1$s</string>
-  <string name="local_llm_hf_downloads_format">%1$d downloads</string>
-  <string name="local_llm_hf_back_to_results">Back to search results</string>
-  <string name="local_llm_hf_requires_access">This repo is gated or private. It needs an access token, which this app does not support. Pick a public repo instead.</string>
-  <string name="local_llm_hf_files_error_format">Could not list files: %1$s</string>
-  <string name="local_llm_hf_no_gguf_files">No .gguf files in this repo</string>
-  <string name="local_llm_hf_file_size_gb_format">%1$.2f GB</string>
-  <string name="local_llm_hf_loading_files">Loading files…</string>
   <string name="mcp_error_reconnect_exhausted">Connection lost — maximum reconnect attempts reached</string>
   <string name="ocr_status_recognizing">Recognizing image…</string>
   <string name="share_sheet_title">Share your LLM models</string>
@@ -2215,7 +2200,6 @@
   <string name="doctor_fix_open_mcp">Open MCP servers</string>
   <string name="doctor_fix_open_skills">Open Skills</string>
   <string name="doctor_fix_open_litert">Open Local LiteRT</string>
-  <string name="doctor_fix_open_llamacpp">Open Local llama.cpp</string>
   <string name="doctor_fix_open_nfc">Open NFC settings</string>
   <string name="doctor_fix_request_whitelist">Request whitelist</string>
   <string name="doctor_fix_rebuild_index">Rebuild search index</string>
@@ -2287,7 +2271,6 @@
   <string name="doctor_check_litert_accel">LiteRT accelerator</string>
   <string name="doctor_check_litert_perf">LiteRT performance</string>
   <string name="doctor_check_litert_vision">LiteRT vision encoder</string>
-  <string name="doctor_check_llamacpp_models">llama.cpp models</string>
   <string name="doctor_check_dns">DNS resolution</string>
   <string name="doctor_check_termux_installed">Termux installed</string>
   <string name="doctor_check_termux_perm">Termux RUN_COMMAND permission</string>
@@ -2435,8 +2418,6 @@
   <string name="doctor_detail_model_rates_full">Last-known per-model rates (character-based estimate, ~10%% accurate for English text):
 %1$s</string>
   <string name="doctor_detail_vision_unavailable_full">Vision encoder unavailable on this device for: %1$s. These multimodal models run in text-only mode — chat works, image inputs don\'t. Often fixed by a future LiteRT-LM SDK update.</string>
-  <string name="doctor_detail_no_llama_models">No llama.cpp models installed.</string>
-  <string name="doctor_fix_open_local_llama">Open Local llama.cpp</string>
   <string name="doctor_detail_termux_not_installed_2">Termux not installed. Required by: %1$s.</string>
   <string name="doctor_detail_termux_run_command_granted">Granted — RikkaHub can dispatch shell commands to Termux.</string>
   <string name="doctor_detail_termux_run_command_not_granted">Not granted. Re-toggle the Termux row in Local Tools to see the post-grant dialog.</string>
@@ -2480,7 +2461,6 @@
   <string name="doctor_detail_nfc_off_needed_by_3">NFC is turned off in system settings. Needed by: %1$s.</string>
   <string name="doctor_detail_model_rates_row">%1$s: prefill %2$.1f tok/s, decode %3$.1f tok/s%4$s</string>
   <string name="doctor_detail_mtp_on">, MTP on</string>
-  <string name="doctor_detail_llamacpp_missing">%1$d of %2$d installed llama.cpp model(s) missing from disk: %3$s. The file may have been moved, deleted, or its storage volume unmounted.</string>
   <string name="doctor_detail_dns_fail">DNS resolution failed or timed out. NetworkChangeMonitor evicts the OkHttp pool on network changes — if this stays red, check connectivity.</string>
   <string name="doctor_detail_images_all_ok">%1$d generated image record(s), all backed by a file on disk.</string>
   <string name="doctor_detail_images_orphan">%1$d of %2$d generated image record(s) point at a file that no longer exists on disk.</string>

@@ -3,7 +3,6 @@ package me.rerere.rikkahub.ui.pages.setting.locallm
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,8 +17,6 @@ import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.LITERT_PROVIDER_ID
-import me.rerere.ai.provider.LLAMACPP_PROVIDER_ID
-import me.rerere.llamacpp.LlamaCppCatalog
 import me.rerere.locallm.AcceleratorProbe
 import me.rerere.locallm.LocalRuntime
 import me.rerere.locallm.LocalRuntimePreferences
@@ -27,10 +24,7 @@ import me.rerere.locallm.litert.LiteRtModelMetadata
 import me.rerere.locallm.MemoryGuard
 import me.rerere.locallm.ModelInstall
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.api.HuggingFaceAPI
-import me.rerere.rikkahub.data.api.HuggingFaceModelSearch
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import me.rerere.rikkahub.data.model.HfModelSearchResult
 import okhttp3.OkHttpClient
 
 /**
@@ -43,17 +37,13 @@ import okhttp3.OkHttpClient
  *  - [errorMessage]: non-null when the last action failed
  *  - [accelerator]: the cached accelerator string (null = never probed)
  *
- * The [runtime] parameter is what lets this single class drive both the LiteRT and
- * llama.cpp settings tiles: each call site supplies its own [LocalRuntime] and every flow
- * above fans out on it rather than hardcoding one runtime.
+ * This ViewModel is intentionally dedicated to the LiteRT local provider.
  */
 class SettingLocalLlmViewModel(
-    val runtime: LocalRuntime,
     private val context: Context,
     private val prefs: LocalRuntimePreferences,
     private val httpClient: OkHttpClient,
     private val settingsStore: SettingsStore,
-    private val hfApi: HuggingFaceAPI,
 ) : ViewModel() {
 
     data class Progress(val percent: Int, val bytesRead: Long, val totalBytes: Long?)
@@ -64,49 +54,30 @@ class SettingLocalLlmViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    private val _hfSearchResults = MutableStateFlow<List<HfModelSearchResult>>(emptyList())
-    val hfSearchResults: StateFlow<List<HfModelSearchResult>> = _hfSearchResults.asStateFlow()
-
-    private val _hfSearchInProgress = MutableStateFlow(false)
-    val hfSearchInProgress: StateFlow<Boolean> = _hfSearchInProgress.asStateFlow()
-
-    /** Repo id the user tapped into, or null when the tile is showing search results.
-     *  Non-null with [hfSelectedRepoFiles] still null means the file listing is loading. */
-    private val _hfSelectedRepoId = MutableStateFlow<String?>(null)
-    val hfSelectedRepoId: StateFlow<String?> = _hfSelectedRepoId.asStateFlow()
-
-    private val _hfSelectedRepoFiles = MutableStateFlow<HuggingFaceModelSearch.FilesResult?>(null)
-    val hfSelectedRepoFiles: StateFlow<HuggingFaceModelSearch.FilesResult?> = _hfSelectedRepoFiles.asStateFlow()
-
-    // Tracks the in-flight coroutine for searchHuggingFace/selectHuggingFaceRepo so a stale
-    // response from a superseded call can't land after a newer one and overwrite its result.
-    private var hfSearchJob: Job? = null
-    private var hfSelectRepoJob: Job? = null
-
     private val _accelerator = MutableStateFlow<String?>(null)
     val accelerator: StateFlow<String?> = _accelerator.asStateFlow()
 
     /** True (default) when the runtime is locked to CPU. Off lets the probe pick GPU/NNAPI/QNN.
      *  Auto-flipped to true by [me.rerere.rikkahub.RikkaHubApp] when the prior process exited
      *  with a native crash inside the runtime's JNI lib (see crashRecoveryAccelerator). */
-    val forceCpu: StateFlow<Boolean> = prefs.forceCpuFlow(runtime)
+    val forceCpu: StateFlow<Boolean> = prefs.forceCpuFlow(LocalRuntime.LiteRT)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     /** Override for `EngineConfig.maxNumTokens`. null = use the per-model curated default
      *  from `LiteRtModelDefaults`. Persisted in `LocalRuntimePreferences`. */
-    val maxNumTokensOverride: StateFlow<Int?> = prefs.maxNumTokensOverrideFlow(runtime)
+    val maxNumTokensOverride: StateFlow<Int?> = prefs.maxNumTokensOverrideFlow(LocalRuntime.LiteRT)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Non-null when the prior process crashed inside the runtime; carries the accelerator
      *  label that crashed so the UI banner can name it. Cleared via [dismissCrashRecovery]. */
-    val crashRecoveryAccelerator: StateFlow<String?> = prefs.crashRecoveryFlow(runtime)
+    val crashRecoveryAccelerator: StateFlow<String?> = prefs.crashRecoveryFlow(LocalRuntime.LiteRT)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Set of installed model filenames whose GPU vision encoder failed on this device.
      *  Surfaced in InstalledModelRow as a "Vision unavailable on this device — text-only"
      *  caption + a "Re-try vision" button that clears the flag so the next load attempts
      *  GPU vision again (useful after a GPU driver update). */
-    val visionUnavailableSet: StateFlow<Set<String>> = prefs.visionUnavailableFlow(runtime)
+    val visionUnavailableSet: StateFlow<Set<String>> = prefs.visionUnavailableFlow(LocalRuntime.LiteRT)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     /** Last-known tok/s telemetry sample per model. Provider stamps a new sample after each
@@ -114,7 +85,7 @@ class SettingLocalLlmViewModel(
      *  installed-model row; Doctor uses this to WARN when sustained decode tps is below the
      *  device's expected band. */
     val perfTelemetry: StateFlow<Map<String, LocalRuntimePreferences.PerfSample>> =
-        prefs.perfTelemetryFlow(runtime)
+        prefs.perfTelemetryFlow(LocalRuntime.LiteRT)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /** Whether the provider is currently enabled in persisted settings. */
@@ -134,35 +105,13 @@ class SettingLocalLlmViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
-    /** The llama.cpp catalog entry `startDefaultDownload()` fetches: the smallest entry,
-     *  since it's the one guaranteed to fit any device the memory guard would approve at
-     *  all. [LlamaCppCatalog.ENTRIES] is ordered smallest-first. */
-    private val defaultLlamaCppEntry = LlamaCppCatalog.ENTRIES.first()
-
     /**
-     * The default model URL for the runtime.
-     *
-     * LiteRT default: litert-community/Qwen2.5-1.5B-Instruct — q8 multi-prefill variant
-     * (~1.6 GB on disk). Public and ungated (Apache-2.0), and its chat template supports
-     * tool calling, which the agent loop depends on.
-     *
-     * paulsp94/Qwen3.5-2B-LiteRT-LM was dropped: that model is packaged for a different
-     * runtime version and throws FAILED_PRECONDITION: No KV cache inputs found.
-     *
-     * llama.cpp default: [defaultLlamaCppEntry] from the curated GGUF catalog.
+     * The default LiteRT model URL.
      */
-    private val defaultModelUrl: String = when (runtime) {
-        LocalRuntime.LiteRT ->
-            "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
-        LocalRuntime.LlamaCpp -> defaultLlamaCppEntry.resolveUrl()
-    }
+    private val defaultModelUrl: String =
+        "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
 
-    /** Currently only LiteRT is wired; the helper exists so a future runtime can fan out
-     *  by adding a `when` arm without touching every flow above. */
-    private fun providerIdForRuntime(): kotlin.uuid.Uuid = when (runtime) {
-        LocalRuntime.LiteRT -> LITERT_PROVIDER_ID
-        LocalRuntime.LlamaCpp -> LLAMACPP_PROVIDER_ID
-    }
+    private fun providerIdForRuntime(): kotlin.uuid.Uuid = LITERT_PROVIDER_ID
 
     init {
         viewModelScope.launch {
@@ -191,7 +140,7 @@ class SettingLocalLlmViewModel(
                 inputModalities = model.inputModalities,
                 abilities = model.abilities,
             )
-            val target = deriveLocalModelCapabilities(runtime, model.modelId)
+            val target = deriveLocalModelCapabilities(model.modelId)
             val merged = LiteRtModelMetadata.mergeAdditive(current, target)
             if (merged.inputModalities == model.inputModalities &&
                 merged.abilities == model.abilities
@@ -223,7 +172,7 @@ class SettingLocalLlmViewModel(
     }
 
     private suspend fun refreshFromDisk() {
-        val installed = prefs.installedModels(runtime)
+        val installed = prefs.installedModels(LocalRuntime.LiteRT)
 
         // Scan for stale HTML files or files with invalid magic bytes masquerading as model
         // binaries. HTML files land when a previous download received an HTML error page
@@ -251,7 +200,7 @@ class SettingLocalLlmViewModel(
         if (brokenFiles.isNotEmpty()) {
             for ((fileName, path) in brokenFiles) {
                 runCatching { java.io.File(path).delete() }
-                prefs.removeInstalledModel(runtime, fileName)
+                prefs.removeInstalledModel(LocalRuntime.LiteRT, fileName)
                 updateMyProvider { p ->
                     val modelToRemove = p.models.firstOrNull { it.modelId == fileName }
                     if (modelToRemove != null) p.delModel(modelToRemove) else p
@@ -273,7 +222,7 @@ class SettingLocalLlmViewModel(
             val knownModelIds = currentProvider.models.map { it.modelId }.toSet()
             val missing = finalInstalled.keys.filter { it !in knownModelIds }
             for (fileName in missing) {
-                val caps = deriveLocalModelCapabilities(runtime, fileName)
+                val caps = deriveLocalModelCapabilities(fileName)
                 val model = Model(
                     modelId = fileName,
                     displayName = fileName,
@@ -285,18 +234,13 @@ class SettingLocalLlmViewModel(
         }
 
         // Restore cached accelerator so the UI can display it without re-probing.
-        _accelerator.value = prefs.acceleratorFlow(runtime).first()
+        _accelerator.value = prefs.acceleratorFlow(LocalRuntime.LiteRT).first()
     }
 
     private suspend fun probeAndCache(): String {
-        val forceCpuNow = prefs.forceCpu(runtime)
-        val accel = when (runtime) {
-            LocalRuntime.LiteRT -> AcceleratorProbe.probeLiteRt(context, forceCpu = forceCpuNow)
-            // llama.cpp is CPU-only in this build (no GPU backend compiled in), so there is
-            // nothing to probe and no force-CPU toggle to honour.
-            LocalRuntime.LlamaCpp -> "cpu"
-        }
-        prefs.setAccelerator(runtime, accel)
+        val forceCpuNow = prefs.forceCpu(LocalRuntime.LiteRT)
+        val accel = AcceleratorProbe.probeLiteRt(context, forceCpu = forceCpuNow)
+        prefs.setAccelerator(LocalRuntime.LiteRT, accel)
         _accelerator.value = accel
         return accel
     }
@@ -306,8 +250,8 @@ class SettingLocalLlmViewModel(
      *  "Try GPU acceleration" toggle on the LiteRT settings page. */
     fun setForceCpu(force: Boolean) {
         viewModelScope.launch {
-            prefs.setForceCpu(runtime, force)
-            prefs.clearAccelerator(runtime)
+            prefs.setForceCpu(LocalRuntime.LiteRT, force)
+            prefs.clearAccelerator(LocalRuntime.LiteRT)
             _accelerator.value = null
             probeAndCache()
         }
@@ -316,12 +260,12 @@ class SettingLocalLlmViewModel(
     /** Acknowledge the crash-recovery banner — clears the persisted notice so it
      *  doesn't show again on the next launch. */
     fun dismissCrashRecovery() {
-        viewModelScope.launch { prefs.clearCrashRecovery(runtime) }
+        viewModelScope.launch { prefs.clearCrashRecovery(LocalRuntime.LiteRT) }
     }
 
     /** Set the max-context override. Pass null to clear and revert to the curated default. */
     fun setMaxNumTokensOverride(value: Int?) {
-        viewModelScope.launch { prefs.setMaxNumTokensOverride(runtime, value) }
+        viewModelScope.launch { prefs.setMaxNumTokensOverride(LocalRuntime.LiteRT, value) }
     }
 
     /** Clear the "vision unavailable" flag for [fileName] so the next inference attempts the
@@ -329,7 +273,7 @@ class SettingLocalLlmViewModel(
      *  after a GPU driver update or a ROM change. If the encoder fails again, the runtime
      *  will re-stamp the flag automatically. */
     fun retryVisionEncoder(fileName: String) {
-        viewModelScope.launch { prefs.clearVisionUnavailable(runtime, fileName) }
+        viewModelScope.launch { prefs.clearVisionUnavailable(LocalRuntime.LiteRT, fileName) }
     }
 
     /**
@@ -347,7 +291,7 @@ class SettingLocalLlmViewModel(
 
     fun reDetectAccelerator() {
         viewModelScope.launch {
-            prefs.clearAccelerator(runtime)
+            prefs.clearAccelerator(LocalRuntime.LiteRT)
             _accelerator.value = null
             probeAndCache()
         }
@@ -370,7 +314,7 @@ class SettingLocalLlmViewModel(
         _downloadProgress.value = Progress(0, 0L, null)
         viewModelScope.launch {
             val url = defaultModelUrl
-            val mem = MemoryGuard.canLoad(context, modelFileBytes = estimatedSize(runtime))
+            val mem = MemoryGuard.canLoad(context, modelFileBytes = estimatedSize())
             if (mem is MemoryGuard.Decision.TooLarge) {
                 _downloadProgress.value = null
                 _errorMessage.value = context.getString(
@@ -400,52 +344,6 @@ class SettingLocalLlmViewModel(
         viewModelScope.launch { executeDownload(normalizedUrl) }
     }
 
-    /**
-     * Search the public HuggingFace model API for GGUF repos matching [query]. Clears any
-     * previously selected repo's file listing, since it belongs to the old search.
-     */
-    fun searchHuggingFace(query: String) {
-        _errorMessage.value = null
-        _hfSelectedRepoId.value = null
-        _hfSelectedRepoFiles.value = null
-        hfSearchJob?.cancel()
-        hfSearchJob = viewModelScope.launch {
-            _hfSearchInProgress.value = true
-            HuggingFaceModelSearch.search(hfApi, query)
-                .onSuccess { _hfSearchResults.value = it }
-                .onFailure {
-                    _hfSearchResults.value = emptyList()
-                    _errorMessage.value = context.getString(
-                        R.string.local_llm_hf_search_failed_format,
-                        it.message ?: it::class.simpleName ?: "",
-                    )
-                }
-            _hfSearchInProgress.value = false
-        }
-    }
-
-    /** List [repoId]'s `.gguf` files. A gated or private repo lands in [hfSelectedRepoFiles]
-     *  as [HuggingFaceModelSearch.FilesResult.RequiresAccess]; see that type's doc for why
-     *  this never shows up as a failed or hanging download instead. */
-    fun selectHuggingFaceRepo(repoId: String) {
-        _hfSelectedRepoId.value = repoId
-        _hfSelectedRepoFiles.value = null
-        hfSelectRepoJob?.cancel()
-        hfSelectRepoJob = viewModelScope.launch {
-            _hfSelectedRepoFiles.value = HuggingFaceModelSearch.listGgufFiles(hfApi, repoId)
-        }
-    }
-
-    fun clearHuggingFaceSelection() {
-        _hfSelectedRepoId.value = null
-        _hfSelectedRepoFiles.value = null
-    }
-
-    /** Install a file found via HuggingFace search through the same [startManualDownload]
-     *  path a pasted URL uses: [ModelInstall.download] already resumes and validates. */
-    fun installFromHuggingFace(repoId: String, fileName: String) {
-        startManualDownload(HuggingFaceModelSearch.resolveUrl(repoId, fileName))
-    }
 
     /**
      * Core download loop shared by [startDefaultDownload] and [startManualDownload].
@@ -455,7 +353,7 @@ class SettingLocalLlmViewModel(
     private suspend fun executeDownload(url: String) {
         val fileName = ModelInstall.extractFileNameFromUrl(url)
         val baseDir = ModelInstall.localModelsDir(context)
-        val target = ModelInstall.targetFile(baseDir, runtime, fileName)
+        val target = ModelInstall.targetFile(baseDir, LocalRuntime.LiteRT, fileName)
         // Belt-and-braces against any future throw from inside the flow layers we
         // don't fully control (OkHttp interceptors, Coroutine cancellation racing the
         // socket close, ...). The flow itself catches IOException and emits Progress.Failed,
@@ -499,8 +397,8 @@ class SettingLocalLlmViewModel(
                 }
                 is ModelInstall.Progress.Done -> {
                     _downloadProgress.value = null
-                    prefs.addInstalledModel(runtime, fileName, p.file.absolutePath)
-                    val caps = deriveLocalModelCapabilities(runtime, fileName)
+                    prefs.addInstalledModel(LocalRuntime.LiteRT, fileName, p.file.absolutePath)
+                    val caps = deriveLocalModelCapabilities(fileName)
                     val model = Model(
                         modelId = fileName,
                         displayName = fileName,
@@ -533,7 +431,6 @@ class SettingLocalLlmViewModel(
             // to a bare file name the same way extractFileNameFromUrl() does for downloads,
             // before it ever reaches ModelInstall.targetFile()/prefs/Model.modelId. Without
             // this, a crafted DISPLAY_NAME containing '/' or '..' segments could write
-            // outside local-models/llamacpp/ or store a path where a bare file name is
             // required.
             val safeFileName = fileName.substringAfterLast('/')
             if (safeFileName.isBlank() || safeFileName == "." || safeFileName == "..") {
@@ -542,7 +439,7 @@ class SettingLocalLlmViewModel(
                 return@launch
             }
             val baseDir = ModelInstall.localModelsDir(context)
-            val target = ModelInstall.targetFile(baseDir, runtime, safeFileName)
+            val target = ModelInstall.targetFile(baseDir, LocalRuntime.LiteRT, safeFileName)
             try {
                 collectInstallProgress(
                     safeFileName,
@@ -566,10 +463,7 @@ class SettingLocalLlmViewModel(
     }
 
     /** The file extension a picked-file import must carry the right magic bytes for. */
-    private fun expectedExtensionForRuntime(): String = when (runtime) {
-        LocalRuntime.LiteRT -> "litertlm"
-        LocalRuntime.LlamaCpp -> "gguf"
-    }
+    private fun expectedExtensionForRuntime(): String = "litertlm"
 
     fun clearError() {
         _errorMessage.value = null
@@ -581,14 +475,14 @@ class SettingLocalLlmViewModel(
      */
     fun deleteModel(fileName: String) {
         viewModelScope.launch {
-            val installed = prefs.installedModels(runtime)
+            val installed = prefs.installedModels(LocalRuntime.LiteRT)
             val path = installed[fileName]
             if (path != null) {
                 runCatching { java.io.File(path).delete() }
                 // Also clean up any leftover partial file from a previous interrupted download.
                 runCatching { java.io.File("$path.partial").delete() }
             }
-            prefs.removeInstalledModel(runtime, fileName)
+            prefs.removeInstalledModel(LocalRuntime.LiteRT, fileName)
             updateMyProvider { p ->
                 val modelToRemove = p.models.firstOrNull { it.modelId == fileName }
                 if (modelToRemove != null) p.delModel(modelToRemove) else p
@@ -612,17 +506,12 @@ class SettingLocalLlmViewModel(
         }
     }
 
-    private fun estimatedSize(rt: LocalRuntime): Long = when (rt) {
-        // Gallery allowlist sizeInBytes = 1_597_931_520 (~1.49 GB) + 200 MB safety pad.
-        LocalRuntime.LiteRT -> 1_800_000_000L
-        // The real byte size of defaultLlamaCppEntry, straight from the verified catalog.
-        LocalRuntime.LlamaCpp -> defaultLlamaCppEntry.sizeBytes
-    }
+    private fun estimatedSize(): Long = 1_800_000_000L
 }
 
 /**
  * Auto-enable transform applied after a model download completes: local-runtime provider
- * settings (LiteRT, llama.cpp) flip to `enabled = true` so the just-downloaded model becomes
+ * settings (LiteRT) flip to `enabled = true` so the just-downloaded model becomes
  * usable without a second trip to Settings. Everything else (cloud providers, AICore) passes
  * through unchanged — this only ever runs against the provider identified by
  * [SettingLocalLlmViewModel.providerIdForRuntime], but stays a total function over
@@ -630,7 +519,6 @@ class SettingLocalLlmViewModel(
  */
 internal fun enableAfterFirstDownload(provider: ProviderSetting): ProviderSetting = when (provider) {
     is ProviderSetting.LiteRtLocal -> provider.copy(enabled = true)
-    is ProviderSetting.LlamaCppLocal -> provider.copy(enabled = true)
     else -> provider
 }
 
@@ -658,26 +546,10 @@ internal fun registerInstalledModel(provider: ProviderSetting, model: Model): Pr
  * file, shared by [SettingLocalLlmViewModel.migrateExistingModelMetadata],
  * [SettingLocalLlmViewModel.refreshFromDisk]'s reconcile step, and the post-download
  * registration path. LiteRT routes through the catalog-driven
- * [LiteRtModelMetadata.deriveCapabilities]. llama.cpp has no per-file config table and no
  * vision support in this build (vision is a spec non-goal), so it always reports TEXT-only
- * input; TOOL and REASONING come from a matching [LlamaCppCatalog] entry's tags when the
- * file is a catalog pick. A file that isn't in the catalog (e.g. a manually installed GGUF)
  * still gets TOOL — the same "assume tool-tuned" fallback LiteRT applies to files outside
  * its own catalog.
  */
 internal fun deriveLocalModelCapabilities(
-    runtime: LocalRuntime,
     fileName: String,
-): LiteRtModelMetadata.Capabilities = when (runtime) {
-    LocalRuntime.LiteRT -> LiteRtModelMetadata.deriveCapabilities(fileName)
-    LocalRuntime.LlamaCpp -> {
-        val tags = LlamaCppCatalog.ENTRIES.firstOrNull { it.file == fileName }?.tags.orEmpty()
-        LiteRtModelMetadata.Capabilities(
-            inputModalities = listOf(Modality.TEXT),
-            abilities = buildList {
-                add(ModelAbility.TOOL)
-                if ("thinking" in tags) add(ModelAbility.REASONING)
-            },
-        )
-    }
-}
+): LiteRtModelMetadata.Capabilities = LiteRtModelMetadata.deriveCapabilities(fileName)

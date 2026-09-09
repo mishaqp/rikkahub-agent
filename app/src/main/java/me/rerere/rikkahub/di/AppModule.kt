@@ -240,7 +240,6 @@ val appModule = module {
     // Phase 22A: Local-LLM on-device providers
     single { me.rerere.locallm.LocalRuntimePreferences(get()) }
     single { me.rerere.locallm.litert.LiteRtRuntime(get()) }
-    single { me.rerere.llamacpp.LlamaCppRuntime() }
 
     single {
         ChatService(

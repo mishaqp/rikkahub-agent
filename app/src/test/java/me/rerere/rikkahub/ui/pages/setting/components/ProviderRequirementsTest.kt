@@ -8,8 +8,8 @@ import org.junit.Test
 
 class ProviderRequirementsTest {
     @Test
-    fun `llama cpp provider reports an on-device CPU-only requirement`() {
-        val requirements = ProviderRequirement.from(ProviderSetting.LlamaCppLocal())
+    fun `LiteRT provider reports its on-device requirement`() {
+        val requirements = ProviderRequirement.from(ProviderSetting.LiteRtLocal())
 
         assertEquals(1, requirements.size)
         assertEquals(TagType.INFO, requirements.single().severity)

@@ -39,9 +39,11 @@ private fun clientReturning(bodyBytes: ByteArray, declaredContentLength: Long?):
         })
         .build()
 
-/** A GGUF magic header followed by [payloadSize] arbitrary bytes. */
-private fun ggufBytes(payloadSize: Int): ByteArray =
-    byteArrayOf(0x47, 0x47, 0x55, 0x46) + ByteArray(payloadSize) { (it % 251).toByte() }
+/** A LiteRTLM magic header followed by [payloadSize] arbitrary bytes. */
+private fun litertlmBytes(payloadSize: Int): ByteArray =
+    byteArrayOf(
+        0x4c, 0x49, 0x54, 0x45, 0x52, 0x54, 0x4c, 0x4d,
+    ) + ByteArray(payloadSize) { (it % 251).toByte() }
 
 /** Delivers [goodBytes] on the first read, then throws to simulate a dropped connection
  *  mid-copy (SocketException / IOException territory). */
@@ -101,21 +103,12 @@ class ModelInstallTest {
         assertEquals(false, ModelInstall.isValidDownloadUrl("file:///etc/passwd"))
     }
 
-    @Test fun `runtimeForExtension routes litertlm to LiteRT, gguf to llama_cpp, and unknowns to null`() {
+    @Test fun `runtimeForExtension accepts LiteRT and rejects unsupported formats`() {
         assertEquals(LocalRuntime.LiteRT, ModelInstall.runtimeForExtension("litertlm"))
-        assertEquals(LocalRuntime.LlamaCpp, ModelInstall.runtimeForExtension("gguf"))
+        assertEquals(LocalRuntime.LiteRT, ModelInstall.runtimeForExtension("LITERTLM"))
+        assertEquals(null, ModelInstall.runtimeForExtension("gguf"))
         assertEquals(null, ModelInstall.runtimeForExtension("task"))
         assertEquals(null, ModelInstall.runtimeForExtension("tflite"))
-    }
-
-    @Test fun `runtimeForExtension is case-insensitive`() {
-        assertEquals(LocalRuntime.LiteRT, ModelInstall.runtimeForExtension("LITERTLM"))
-        assertEquals(LocalRuntime.LlamaCpp, ModelInstall.runtimeForExtension("GGUF"))
-    }
-
-    @Test fun `runtimeForExtension returns null for unrecognised extension`() {
-        assertEquals(null, ModelInstall.runtimeForExtension("bin"))
-        assertEquals(null, ModelInstall.runtimeForExtension(""))
     }
 
     @Test fun `extractFileNameFromUrl pulls the last path segment`() {
@@ -219,18 +212,13 @@ class ModelInstallTest {
         assertFalse(ModelInstall.isValidMagicForExtension("litertlm", bytes))
     }
 
-    @Test fun `isValidMagicForExtension accepts GGUF magic for gguf`() {
-        val bytes = byteArrayOf(0x47, 0x47, 0x55, 0x46) + ByteArray(12)
-        assertTrue(ModelInstall.isValidMagicForExtension("gguf", bytes))
-        assertTrue(ModelInstall.isValidMagicForExtension("GGUF", bytes))  // case-insensitive
-    }
 
-    @Test fun `isValidMagicForExtension rejects a truncated or HTML-error download named gguf`() {
-        // A truncated download or an HTML error page saved under a .gguf name must not be
+    @Test fun `isValidMagicForExtension rejects a truncated or HTML-error download named litertlm`() {
+        // A truncated download or an HTML error page saved under a .litertlm name must not be
         // accepted as a model — this is the regression the magic check exists to catch.
         val html = "<!DOCTYPE html><html>".toByteArray().copyOf(16)
-        assertFalse(ModelInstall.isValidMagicForExtension("gguf", html))
-        assertFalse(ModelInstall.isValidMagicForExtension("gguf", ByteArray(16)))
+        assertFalse(ModelInstall.isValidMagicForExtension("litertlm", html))
+        assertFalse(ModelInstall.isValidMagicForExtension("litertlm", ByteArray(16)))
     }
 
     @Test fun `isValidMagicForExtension rejects buffer shorter than 4 bytes`() {
@@ -270,17 +258,17 @@ class ModelInstallTest {
         assertEquals(expected, ModelInstall.normalizeHuggingFaceUrl(blob))
     }
 
-    // copyFromStream (SAF "install a GGUF I already have" import) -------------
+    // copyFromStream (SAF "install a LiteRTLM I already have" import) -------------
 
     @Test fun `copyFromStream writes matching bytes and ends in Done`() = runBlocking {
-        val content = ggufBytes(5000)
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val content = litertlmBytes(5000)
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
             input = ByteArrayInputStream(content),
             target = target,
             totalBytes = content.size.toLong(),
-            expectedExtension = "gguf",
+            expectedExtension = "litertlm",
         ).toList()
 
         assertTrue(events.first() is ModelInstall.Progress.Started)
@@ -291,11 +279,11 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream reports a monotonically increasing byte count across multiple buffer fills`() = runBlocking {
-        val content = ggufBytes(200_000) // several 64KB-buffer iterations
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val content = litertlmBytes(200_000) // several 64KB-buffer iterations
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
-            ByteArrayInputStream(content), target, content.size.toLong(), "gguf",
+            ByteArrayInputStream(content), target, content.size.toLong(), "litertlm",
         ).toList()
 
         val ticks = events.filterIsInstance<ModelInstall.Progress.Tick>()
@@ -305,11 +293,11 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream rejects a file whose first bytes are not the expected magic`() = runBlocking {
-        val notGguf = "not a gguf file, just some text".toByteArray()
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val notLitertlm = "not a litertlm file, just some text".toByteArray()
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
-            ByteArrayInputStream(notGguf), target, notGguf.size.toLong(), "gguf",
+            ByteArrayInputStream(notLitertlm), target, notLitertlm.size.toLong(), "litertlm",
         ).toList()
 
         val failed = events.last() as ModelInstall.Progress.Failed
@@ -319,13 +307,13 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream validates against expectedExtension regardless of the target's own name`() = runBlocking {
-        // The picked file is named "model.gguf" (matches the runtime's target), but its
+        // The picked file is named "model.litertlm" (matches the runtime's target), but its
         // content is HTML — expectedExtension must still be honoured over target.name.
         val html = "<!DOCTYPE html><html></html>".toByteArray()
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
-            ByteArrayInputStream(html), target, html.size.toLong(), "gguf",
+            ByteArrayInputStream(html), target, html.size.toLong(), "litertlm",
         ).toList()
 
         assertTrue(events.last() is ModelInstall.Progress.Failed)
@@ -333,22 +321,22 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream overwrites an existing target file`() = runBlocking {
-        val target = File(tempFolder.newFolder(), "model.gguf")
-        target.writeBytes(ggufBytes(10)) // stale previous install
-        val newContent = ggufBytes(50)
+        val target = File(tempFolder.newFolder(), "model.litertlm")
+        target.writeBytes(litertlmBytes(10)) // stale previous install
+        val newContent = litertlmBytes(50)
 
         ModelInstall.copyFromStream(
-            ByteArrayInputStream(newContent), target, newContent.size.toLong(), "gguf",
+            ByteArrayInputStream(newContent), target, newContent.size.toLong(), "litertlm",
         ).toList()
 
         assertArrayEquals(newContent, target.readBytes())
     }
 
     @Test fun `copyFromStream surfaces a mid-stream IOException as Failed and cleans up the partial`() = runBlocking {
-        val target = File(tempFolder.newFolder(), "model.gguf")
-        val source = FailingInputStream(ggufBytes(10))
+        val target = File(tempFolder.newFolder(), "model.litertlm")
+        val source = FailingInputStream(litertlmBytes(10))
 
-        val events = ModelInstall.copyFromStream(source, target, null, "gguf").toList()
+        val events = ModelInstall.copyFromStream(source, target, null, "litertlm").toList()
 
         assertTrue(events.last() is ModelInstall.Progress.Failed)
         assertFalse(target.exists())
@@ -359,12 +347,12 @@ class ModelInstallTest {
         // A network-backed SAF DocumentsProvider (Google Drive, etc.) can return 1-3 bytes on
         // an early read; InputStream.read(ByteArray) only guarantees at least one. The four
         // magic bytes now arrive one at a time across the first four reads.
-        val content = ggufBytes(5000)
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val content = litertlmBytes(5000)
+        val target = File(tempFolder.newFolder(), "model.litertlm")
         val source = ChunkedInputStream(content, chunkSizes = listOf(1, 1, 1, 1))
 
         val events = ModelInstall.copyFromStream(
-            input = source, target = target, totalBytes = content.size.toLong(), expectedExtension = "gguf",
+            input = source, target = target, totalBytes = content.size.toLong(), expectedExtension = "litertlm",
         ).toList()
 
         assertTrue(events.last() is ModelInstall.Progress.Done)
@@ -376,11 +364,11 @@ class ModelInstallTest {
         // Only 2 bytes ever arrive, delivered one at a time, then EOF — must still be rejected
         // by the same size check as a single too-short read, not treated as "keep waiting".
         val tooShort = byteArrayOf(0x47, 0x47)
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
         val source = ChunkedInputStream(tooShort, chunkSizes = listOf(1, 1))
 
         val events = ModelInstall.copyFromStream(
-            input = source, target = target, totalBytes = 2L, expectedExtension = "gguf",
+            input = source, target = target, totalBytes = 2L, expectedExtension = "litertlm",
         ).toList()
 
         val failed = events.last() as ModelInstall.Progress.Failed
@@ -390,10 +378,10 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream rejects a completely empty picked file instead of registering it`() = runBlocking {
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
-            ByteArrayInputStream(ByteArray(0)), target, totalBytes = 0L, expectedExtension = "gguf",
+            ByteArrayInputStream(ByteArray(0)), target, totalBytes = 0L, expectedExtension = "litertlm",
         ).toList()
 
         val failed = events.last() as ModelInstall.Progress.Failed
@@ -403,11 +391,11 @@ class ModelInstallTest {
     }
 
     @Test fun `copyFromStream passes a null totalBytes through unchanged`() = runBlocking {
-        val content = ggufBytes(10)
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val content = litertlmBytes(10)
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
         val events = ModelInstall.copyFromStream(
-            ByteArrayInputStream(content), target, totalBytes = null, expectedExtension = "gguf",
+            ByteArrayInputStream(content), target, totalBytes = null, expectedExtension = "litertlm",
         ).toList()
 
         assertEquals(null, (events.first() as ModelInstall.Progress.Started).totalBytes)
@@ -419,14 +407,14 @@ class ModelInstallTest {
     @Test fun `download rejects a response that ends before Content-Length bytes arrive`() = runBlocking {
         // The connection closes cleanly (no exception) after 3000 of the 5000 declared
         // bytes - a server/proxy truncation, not a socket error. The bytes that did
-        // arrive still start with a valid GGUF magic header, so only a byte-count check
+        // arrive still start with a valid LiteRTLM magic header, so only a byte-count check
         // against Content-Length can catch this.
-        val fullContent = ggufBytes(5000)
+        val fullContent = litertlmBytes(5000)
         val truncated = fullContent.copyOf(3000)
         val client = clientReturning(truncated, declaredContentLength = fullContent.size.toLong())
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
-        val events = ModelInstall.download(client, "https://example.com/model.gguf", target).toList()
+        val events = ModelInstall.download(client, "https://example.com/model.litertlm", target).toList()
 
         val failed = events.last() as ModelInstall.Progress.Failed
         assertTrue("expected an IOException, got ${failed.cause}", failed.cause is IOException)
@@ -434,11 +422,11 @@ class ModelInstallTest {
     }
 
     @Test fun `download accepts a response whose byte count matches Content-Length exactly`() = runBlocking {
-        val content = ggufBytes(5000)
+        val content = litertlmBytes(5000)
         val client = clientReturning(content, declaredContentLength = content.size.toLong())
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
-        val events = ModelInstall.download(client, "https://example.com/model.gguf", target).toList()
+        val events = ModelInstall.download(client, "https://example.com/model.litertlm", target).toList()
 
         assertTrue("expected Done, got ${events.last()}", events.last() is ModelInstall.Progress.Done)
         assertArrayEquals(content, target.readBytes())
@@ -448,11 +436,11 @@ class ModelInstallTest {
         // Without a Content-Length there is nothing to compare totalRead against, so the
         // existing magic-byte check is the only signal available - this must not regress
         // into rejecting every no-Content-Length response outright.
-        val content = ggufBytes(200)
+        val content = litertlmBytes(200)
         val client = clientReturning(content, declaredContentLength = null)
-        val target = File(tempFolder.newFolder(), "model.gguf")
+        val target = File(tempFolder.newFolder(), "model.litertlm")
 
-        val events = ModelInstall.download(client, "https://example.com/model.gguf", target).toList()
+        val events = ModelInstall.download(client, "https://example.com/model.litertlm", target).toList()
 
         assertTrue("expected Done, got ${events.last()}", events.last() is ModelInstall.Progress.Done)
     }

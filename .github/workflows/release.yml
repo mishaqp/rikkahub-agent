@@ -102,6 +102,11 @@ jobs:
             app/build/outputs/apk/release/*.apk
             BUILD_COMMIT.txt
           if-no-files-found: error
+      - name: Print lint diagnostics on failure
+        if: failure()
+        run: |
+          tail -80 ci-diagnostics/lint-processes.txt || true
+          tail -2500 ci-diagnostics/lint-threads.txt || true
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v4

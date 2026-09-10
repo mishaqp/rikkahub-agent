@@ -111,9 +111,11 @@ class UpdateChecker(
  * repository variable points at `mishaqp/rikkahub-agent`). Accept both shapes so the update
  * card keeps working whichever the operator configures.
  */
+private val updateInfoJson = Json { ignoreUnknownKeys = true }
+
 private fun decodeUpdateInfo(body: String): UpdateInfo =
-    runCatching { json.decodeFromString<UpdateInfo>(body) }.getOrElse {
-        val release = json.decodeFromString<GitHubRelease>(body)
+    runCatching { updateInfoJson.decodeFromString<UpdateInfo>(body) }.getOrElse {
+        val release = updateInfoJson.decodeFromString<GitHubRelease>(body)
         UpdateInfo(
             version = release.tagName.removePrefix("v"),
             publishedAt = release.publishedAt,

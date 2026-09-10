@@ -38,7 +38,6 @@ jobs:
           mkdir -p /tmp/out
           cp /tmp/conflicts.txt /tmp/changed.txt /tmp/out/
           tar -czf /tmp/out/merge-result.tar.gz -T /tmp/changed.txt 2>/dev/null
-          ls -la /tmp/out
           exit 0
       - name: Upload merge result
         if: always()
@@ -46,4 +45,38 @@ jobs:
         with:
           name: merge-result
           path: /tmp/out
+          if-no-files-found: error
+
+  schema:
+    if: contains(github.event.head_commit.message, '[schema]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: update/upstream-2.5.1
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: oven-sh/setup-bun@v2
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Export Room schema (31.json)
+        run: |
+          ./gradlew :app:kspReleaseKotlin -Parm64Only=true --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
+          || ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: List generated schemas
+        run: ls -la app/schemas/me.rerere.rikkahub.data.db.AppDatabase/ | tail -6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: room-schema
+          path: app/schemas/me.rerere.rikkahub.data.db.AppDatabase/*.json
           if-no-files-found: error

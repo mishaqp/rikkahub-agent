@@ -23,8 +23,8 @@ android {
         applicationId = "me.mishaqp.rikkahub"
         minSdk = 26
         targetSdk = 37
-        versionCode = releaseVersionCode
-        versionName = "2.5.0-agent.1"
+            versionCode = releaseVersionCode
+            versionName = "2.5.1-agent.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

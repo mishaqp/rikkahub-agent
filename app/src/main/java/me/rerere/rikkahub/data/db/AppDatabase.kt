@@ -64,7 +64,7 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         WorkspaceEntity::class,
         FolderEntity::class,
     ],
-    version = 30,
+        version = 31,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -108,6 +108,8 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         // from Room. Nullable-equivalent (empty string default, matching folder_id), so a plain
         // auto-migration suffices.
         AutoMigration(from = 29, to = 30),
+        // v31: upstream 2.5.1 added WorkspaceEntity.shellCompatibilityMode (shell_compatibility_mode, Int, defaultValue 0). Pure column addition, so Room derives it.
+        AutoMigration(from = 30, to = 31),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)

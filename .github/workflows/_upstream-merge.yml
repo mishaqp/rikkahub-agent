@@ -1,0 +1,41 @@
+name: _upstream merge probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: update/upstream-2.5.1
+          fetch-depth: 0
+      - name: Merge upstream 2.5.1 and report conflicts
+        shell: bash
+        run: |
+          git config user.name "probe"
+          git config user.email "probe@example.com"
+          git config merge.conflictStyle diff3
+          git remote add upstream https://github.com/rikkahub/rikkahub.git
+          git fetch --no-tags upstream 2.5.1
+          echo "HEAD:            $(git rev-parse HEAD)"
+          echo "upstream/2.5.1:  $(git rev-parse upstream/2.5.1)"
+          echo "merge-base:      $(git merge-base HEAD upstream/2.5.1)"
+          if git merge --no-ff --no-commit upstream/2.5.1; then echo "RESULT: MERGE_CLEAN"; else echo "RESULT: MERGE_CONFLICTS"; fi
+          echo "=== unmerged (conflicted) files ==="
+          git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt
+          echo "=== conflict count: $(wc -l < /tmp/conflicts.txt) ==="
+          echo "=== all changed vs HEAD ==="
+          git diff --name-only HEAD | wc -l
+          mkdir -p /tmp/conf
+          while IFS= read -r f; do [ -n "$f" ] && cp --parents "$f" /tmp/conf/ 2>/dev/null || true; done < /tmp/conflicts.txt
+          find /tmp/conf -type f | head -50
+      - name: Upload conflicted files (with markers)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conflicted-files
+          path: /tmp/conf
+          if-no-files-found: ignore

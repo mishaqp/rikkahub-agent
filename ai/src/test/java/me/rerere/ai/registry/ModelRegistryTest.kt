@@ -135,6 +135,16 @@ class ModelRegistryTest {
             reasonerAbilities,
             ModelRegistry.MODEL_ABILITIES.getData("deepseek-v4-flash-vision-exp")
         )
+        // Official deepseek-flash: vision + tools + reasoning, 1M context.
+        assertEquals(
+            listOf(Modality.TEXT, Modality.IMAGE),
+            ModelRegistry.MODEL_INPUT_MODALITIES.getData("deepseek-flash")
+        )
+        assertEquals(
+            reasonerAbilities,
+            ModelRegistry.MODEL_ABILITIES.getData("deepseek-flash")
+        )
+        assertEquals(1_000_000, ModelRegistry.MODEL_CONTEXT_LENGTH.getData("deepseek-flash"))
         assertEquals(1_000_000, ModelRegistry.MODEL_CONTEXT_LENGTH.getData("deepseek-v4-flash"))
         assertEquals(1_000_000, ModelRegistry.MODEL_CONTEXT_LENGTH.getData("deepseek-v4-pro"))
         assertEquals(1_000_000, ModelRegistry.MODEL_CONTEXT_LENGTH.getData("deepseek-v4-flash-vision-exp"))

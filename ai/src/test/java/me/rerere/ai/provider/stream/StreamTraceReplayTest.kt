@@ -77,6 +77,17 @@ class StreamTraceReplayTest {
     }
 
     @Test
+    fun `replay deepseek-flash structured tool call trace`() {
+        // Regression for the official deepseek-flash API id: the same Chat Completions payload
+        // shape as the deepseek-chat trace, but every chunk reports model="deepseek-flash".
+        // Verifies the structured tool_calls path (ToolCallStart/Delta/End) decodes unchanged.
+        assertTrace(
+            "generated/openai-chat/deepseek-flash-tool",
+            ChatCompletionsStreamDecoder(),
+        )
+    }
+
+    @Test
     fun `replay OpenRouter Chat Completions trace`() {
         assertTrace(
             "generated/openai-chat/openrouter-completions-tool",

@@ -14,7 +14,7 @@ jobs:
         with:
           ref: update/upstream-2.5.1
           fetch-depth: 0
-      - name: Merge upstream 2.5.1 and report conflicts
+      - name: Merge upstream 2.5.1 and export merge result
         shell: bash
         run: |
           set +e
@@ -23,24 +23,27 @@ jobs:
           git config merge.conflictStyle diff3
           git remote add upstream https://github.com/rikkahub/rikkahub.git
           git fetch --no-tags upstream refs/tags/2.5.1:refs/remotes/upstream/2.5.1
+          UP=$(git rev-parse refs/remotes/upstream/2.5.1)
           echo "HEAD:           $(git rev-parse HEAD)"
-          echo "upstream/2.5.1: $(git rev-parse refs/remotes/upstream/2.5.1)"
-          echo "merge-base:     $(git merge-base HEAD upstream/2.5.1)"
-          git merge --no-ff --no-commit upstream/2.5.1
+          echo "upstream:       $UP"
+          echo "merge-base:     $(git merge-base HEAD $UP)"
+          git merge --no-ff --no-commit $UP
           echo "RESULT_CODE: $?"
           git diff --name-only --diff-filter=U > /tmp/conflicts.txt
-          echo "=== CONFLICTED FILES ($(wc -l < /tmp/conflicts.txt)) ==="
+          git diff --name-only HEAD > /tmp/changed.txt
+          echo "=== CONFLICTED ($(wc -l < /tmp/conflicts.txt)) ==="
           cat /tmp/conflicts.txt
-          echo "=== LOCAL CHANGES NOT YET MERGED: $(git diff --name-only HEAD | wc -l) ==="
-          echo "=== UPSTREAM AHEAD: $(git rev-list --count HEAD..upstream/2.5.1) ==="
-          mkdir -p /tmp/conf
-          while IFS= read -r f; do [ -n "$f" ] && mkdir -p "/tmp/conf/$(dirname "$f")" && cp "$f" "/tmp/conf/$f" 2>/dev/null; done < /tmp/conflicts.txt
-          find /tmp/conf -type f | sed 's|/tmp/conf/||'
+          echo "=== CHANGED BY MERGE ($(wc -l < /tmp/changed.txt)) ==="
+          cat /tmp/changed.txt
+          mkdir -p /tmp/out
+          cp /tmp/conflicts.txt /tmp/changed.txt /tmp/out/
+          tar -czf /tmp/out/merge-result.tar.gz -T /tmp/changed.txt 2>/dev/null
+          ls -la /tmp/out
           exit 0
-      - name: Upload conflicted files (with markers)
+      - name: Upload merge result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conflicted-files
-          path: /tmp/conf
-          if-no-files-found: ignore
+          name: merge-result
+          path: /tmp/out
+          if-no-files-found: error

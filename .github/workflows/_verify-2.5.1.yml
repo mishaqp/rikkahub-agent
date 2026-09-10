@@ -50,6 +50,9 @@ jobs:
     name: Build, lint, unit tests, APK verification
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      VERSION_CODE: ${{ github.run_number }}
+      UPDATE_API_URL: ${{ vars.UPDATE_API_URL }}
     steps:
       - uses: actions/checkout@v4
         with:

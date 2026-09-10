@@ -2,7 +2,6 @@ package me.rerere.rikkahub.data.db
 
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
@@ -23,12 +22,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AppDatabaseMigrationTest {
 
+    // Two-argument form on purpose: AutoMigrationSpec lives in room-common, which is not on the
+    // androidTest compile classpath, so the specs/openFactory defaults must come from the library.
     @get:Rule
     val helper: MigrationTestHelper = MigrationTestHelper(
         InstrumentationRegistry.getInstrumentation(),
         AppDatabase::class,
-        emptyList(),
-        FrameworkSQLiteOpenHelperFactory(),
     )
 
     @Test

@@ -1,5 +1,7 @@
 name: _upstream merge probe
 on:
+  push:
+    branches: [update/upstream-2.5.1]
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,23 +17,26 @@ jobs:
       - name: Merge upstream 2.5.1 and report conflicts
         shell: bash
         run: |
+          set +e
           git config user.name "probe"
           git config user.email "probe@example.com"
           git config merge.conflictStyle diff3
           git remote add upstream https://github.com/rikkahub/rikkahub.git
           git fetch --no-tags upstream 2.5.1
-          echo "HEAD:            $(git rev-parse HEAD)"
-          echo "upstream/2.5.1:  $(git rev-parse upstream/2.5.1)"
-          echo "merge-base:      $(git merge-base HEAD upstream/2.5.1)"
-          if git merge --no-ff --no-commit upstream/2.5.1; then echo "RESULT: MERGE_CLEAN"; else echo "RESULT: MERGE_CONFLICTS"; fi
-          echo "=== unmerged (conflicted) files ==="
-          git diff --name-only --diff-filter=U | tee /tmp/conflicts.txt
-          echo "=== conflict count: $(wc -l < /tmp/conflicts.txt) ==="
-          echo "=== all changed vs HEAD ==="
-          git diff --name-only HEAD | wc -l
+          echo "HEAD:           $(git rev-parse HEAD)"
+          echo "upstream/2.5.1: $(git rev-parse upstream/2.5.1)"
+          echo "merge-base:     $(git merge-base HEAD upstream/2.5.1)"
+          git merge --no-ff --no-commit upstream/2.5.1
+          echo "RESULT_CODE: $?"
+          git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+          echo "=== CONFLICTED FILES ($(wc -l < /tmp/conflicts.txt)) ==="
+          cat /tmp/conflicts.txt
+          echo "=== LOCAL CHANGES NOT YET MERGED: $(git diff --name-only HEAD | wc -l) ==="
+          echo "=== UPSTREAM AHEAD: $(git rev-list --count HEAD..upstream/2.5.1) ==="
           mkdir -p /tmp/conf
-          while IFS= read -r f; do [ -n "$f" ] && cp --parents "$f" /tmp/conf/ 2>/dev/null || true; done < /tmp/conflicts.txt
-          find /tmp/conf -type f | head -50
+          while IFS= read -r f; do [ -n "$f" ] && mkdir -p "/tmp/conf/$(dirname "$f")" && cp "$f" "/tmp/conf/$f" 2>/dev/null; done < /tmp/conflicts.txt
+          find /tmp/conf -type f | sed 's|/tmp/conf/||'
+          exit 0
       - name: Upload conflicted files (with markers)
         if: always()
         uses: actions/upload-artifact@v4

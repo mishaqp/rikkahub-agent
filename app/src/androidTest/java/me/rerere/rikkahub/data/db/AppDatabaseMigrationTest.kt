@@ -27,7 +27,7 @@ class AppDatabaseMigrationTest {
     @get:Rule
     val helper: MigrationTestHelper = MigrationTestHelper(
         InstrumentationRegistry.getInstrumentation(),
-        AppDatabase::class,
+        AppDatabase::class.java,
     )
 
     @Test

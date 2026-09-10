@@ -1,4 +1,8 @@
 name: _verify 2.5.1 (non-publishing)
+# Temporary branch-only gate used while the 2.5.1 port is under review: it fails fast on the
+# repository-level regressions that the port could introduce. The heavy checks (lint, arm64
+# build, APK/certificate/URL verification, emulator migrations) now live in the permanent ci.yml
+# and run on this pull request. Delete this file once ci.yml is green on master.
 on:
   push:
     branches: [update/upstream-2.5.1]
@@ -8,6 +12,7 @@ permissions:
 concurrency:
   group: verify-2.5.1
   cancel-in-progress: true
+
 jobs:
   static-checks:
     name: Static checks
@@ -16,254 +21,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: update/upstream-2.5.1
-          fetch-depth: 1
-      - name: Grep the tree
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Guards
         shell: bash
         run: |
-          set +e
-          echo "=== 1. references to the parent repo (want 0) ==="
-          grep -rn "ExTV/rikkahub-agent" --include="*.kt" --include="*.kts" --include="*.xml" --include="*.toml" --include="*.ts" --include="*.tsx" --include="*.json" --include="*.md" . | grep -v "^./.git/" | grep -v "^./app/schemas/" || echo "<none>"
-          echo
-          echo "=== 2. update wiring in app/build.gradle.kts ==="
-          grep -n "forkReleaseUrl\|updateApiUrl\|UPDATE_API_URL" app/build.gradle.kts
-          echo
-          echo "=== 3. release checker constant ==="
-          grep -rn "LATEST_URL" app/src/main/java/me/rerere/rikkahub/reliability/GitHubReleaseChecker.kt
-          echo
-          echo "=== 4. who consumes the two update paths ==="
-          grep -rn "UpdateChecker\|GitHubReleaseChecker" --include="*.kt" app/src/main | grep -v "^Binary"
-          echo
-          echo "=== 5. Room version + the 23 -> 24 and 30 -> 31 steps ==="
-          grep -n "    version = \|AutoMigration(from = 23, to = 24)\|AutoMigration(from = 30, to = 31)" app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt
-          echo
-          echo "=== 6. instrumentation test present ==="
-          ls -la app/src/androidTest/java/me/rerere/rikkahub/data/db/
-          echo
-          echo "=== 7. upstream 2.5.1 still an ancestor ==="
-          git remote add upstream https://github.com/rikkahub/rikkahub.git 2>/dev/null
-          git fetch --no-tags upstream refs/tags/2.5.1:refs/remotes/upstream/2.5.1 >/dev/null 2>&1
-          git merge-base --is-ancestor refs/remotes/upstream/2.5.1 HEAD && echo "YES: a9b35ba2 is an ancestor" || echo "NO"
-          exit 0
+          set -uo pipefail
+          fail=0
+          note() { echo "::error::$1"; fail=1; }
 
-  build-and-checks:
-    name: Build, lint, unit tests, APK verification
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    env:
-      VERSION_CODE: ${{ github.run_number }}
-      UPDATE_API_URL: ${{ vars.UPDATE_API_URL }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: update/upstream-2.5.1
-          submodules: recursive
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-      - uses: oven-sh/setup-bun@v2
-      - uses: gradle/actions/setup-gradle@v4
+          echo "=== 1. no source may point at the parent repository ==="
+          hits=$(grep -rn "ExTV/rikkahub-agent" app/src ai/src local-llm/src workspace/src web-ui 2>/dev/null || true)
+          if [ -n "$hits" ]; then note "ExTV/rikkahub-agent referenced in sources"; echo "$hits"; fi
+          unexpected=$(grep -n "ExTV/rikkahub-agent" app/build.gradle.kts | grep -v 'check(!updateApiUrl' || true)
+          if [ -n "$unexpected" ]; then note "unexpected ExTV/rikkahub-agent reference in app/build.gradle.kts"; echo "$unexpected"; fi
 
-      - name: Configure release signing
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::signing secrets missing"; exit 1; fi
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          cat > local.properties <<EOF
-          storeFile=$RUNNER_TEMP/release.keystore
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          EOF
+          echo "=== 2. the update URL must point at this fork ==="
+          grep -q 'const val LATEST_URL = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"' \
+            app/src/main/java/me/rerere/rikkahub/reliability/GitHubReleaseChecker.kt \
+            || note "GitHubReleaseChecker.LATEST_URL does not point at mishaqp/rikkahub-agent"
+          grep -q 'val forkReleaseUrl = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"' \
+            app/build.gradle.kts \
+            || note "app/build.gradle.kts has no mishaqp fallback URL"
 
-      - name: Unit tests (:ai, :local-llm, :app)
-        run: >-
-          ./gradlew
-          :ai:testDebugUnitTest
-          :local-llm:testDebugUnitTest
-          :app:testDebugUnitTest
-          --no-daemon --max-workers=2
-          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+          echo "=== 3. the Room chain must contain 23 -> 24 and 30 -> 31 ==="
+          grep -q "AutoMigration(from = 23, to = 24)" app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt \
+            || note "AutoMigration(23, 24) is missing"
+          grep -q "AutoMigration(from = 30, to = 31)" app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt \
+            || note "AutoMigration(30, 31) is missing"
+          grep -q "^    version = 31," app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt \
+            || note "AppDatabase version = 31 is missing or mis-indented"
 
-      - name: Web UI typecheck
-        working-directory: web-ui
-        run: pnpm typecheck
+          echo "=== 4. upstream 2.5.1 must be an ancestor of HEAD ==="
+          git remote add upstream https://github.com/rikkahub/rikkahub.git 2>/dev/null || true
+          git fetch --no-tags upstream refs/tags/2.5.1:refs/remotes/upstream/2.5.1 >/dev/null 2>&1 || true
+          if git merge-base --is-ancestor refs/remotes/upstream/2.5.1 HEAD; then
+            echo "OK: a9b35ba2 is an ancestor of HEAD"
+          else
+            note "upstream 2.5.1 is not an ancestor of HEAD"
+          fi
 
-      - name: Release lint (Xmx6g)
-        timeout-minutes: 40
-        run: >-
-          ./gradlew :app:lintRelease -Parm64Only=true
-          --no-daemon --no-parallel --max-workers=1 --console=plain
-          -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
+          echo "=== 5. single-source versionCode ==="
+          code="$(bash .github/scripts/version-code.sh)" || note "version-code.sh failed"
+          echo "computed VERSION_CODE: ${code:-<none>}"
 
-      - name: arm64 assembleRelease
-        timeout-minutes: 30
-        run: >-
-          ./gradlew :app:assembleRelease -Parm64Only=true
-          --no-daemon --no-parallel --max-workers=2 --console=plain
-          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+          echo "=== 6. no llama.cpp / GGUF and a single submodule ==="
+          llama=$(grep -rliE "llama|gguf" app/src ai/src local-llm/src workspace/src 2>/dev/null | grep -vi "ollama" || true)
+          if [ -n "$llama" ]; then note "llama/gguf references found"; echo "$llama"; fi
+          subs=$(grep -c '^\[submodule' .gitmodules || true)
+          [ "$subs" = "1" ] || note "expected exactly one submodule, found $subs"
 
-      - name: arm64 bundleRelease
-        timeout-minutes: 20
-        run: >-
-          ./gradlew :app:bundleRelease -Parm64Only=true
-          --no-daemon --no-parallel --max-workers=2 --console=plain
-          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-
-      - name: Verify APK (badging, dex URLs, apksigner)
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          echo "APK: $APK"
-          AAPT2=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          echo "aapt2=$AAPT2"
-          echo "apksigner=$APKSIGNER"
-
-          echo "=== badging ==="
-          "$AAPT2" dump badging "$APK" | tee /tmp/badging.txt | grep -E "^package:|^native-code:"
-          if grep -q "testOnly=.true." /tmp/badging.txt; then echo "::error::APK is testOnly"; exit 1; fi
-          grep -q "package: name='me.mishaqp.rikkahub'" /tmp/badging.txt || { echo "::error::wrong package"; exit 1; }
-          grep -q "versionName='2.5.1-agent.1'" /tmp/badging.txt || { echo "::error::wrong versionName"; exit 1; }
-          grep -q "native-code: 'arm64-v8a'" /tmp/badging.txt || { echo "::error::wrong ABI"; exit 1; }
-
-          echo "=== apksigner verify ==="
-          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner.txt
-          EXPECTED=973f6443a15702066b0e97ff807dca2009461e1f3523cfa4d92d073a2fdccd4d
-          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 "certificate SHA-256 digest" | awk '{print $NF}')
-          echo "cert sha256: $ACTUAL"
-          [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::certificate mismatch"; exit 1; }
-
-          echo "=== dex URL scan ==="
-          APK_PATH="$APK" python3 - <<'PY'
-          import os, re, sys, zipfile
-          z = zipfile.ZipFile(os.environ["APK_PATH"])
-          bad = good = 0
-          urls = set()
-          for n in z.namelist():
-              if not n.endswith(".dex"):
-                  continue
-              d = z.read(n)
-              bad += d.count(b"ExTV/rikkahub-agent")
-              good += d.count(b"mishaqp/rikkahub-agent")
-              for m in re.finditer(rb"https?://[ -~]{5,140}", d):
-                  u = m.group().decode("ascii", "replace")
-                  if "rikkahub-agent" in u:
-                      urls.add(u)
-          print("ExTV/rikkahub-agent occurrences:", bad)
-          print("mishaqp/rikkahub-agent occurrences:", good)
-          for u in sorted(urls):
-              print("   URL:", u)
-          if bad:
-              sys.exit("FAIL: ExTV/rikkahub-agent is still baked into the dex")
-          if not good:
-              sys.exit("FAIL: mishaqp/rikkahub-agent is missing from the dex")
-          PY
-
-      - name: Upload APK + AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: rikkahub-2.5.1-release
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
-          if-no-files-found: error
-
-
-  lint-baseline:
-    if: contains(github.event.head_commit.message, '[baseline]')
-    name: Regenerate lint baseline
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: update/upstream-2.5.1
-          submodules: recursive
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-      - uses: oven-sh/setup-bun@v2
-      - uses: gradle/actions/setup-gradle@v4
-      - name: updateLintBaseline
-        run: |
-          ./gradlew :app:updateLintBaseline --no-daemon --no-parallel --max-workers=1 \
-            -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8" \
-          || ./gradlew updateLintBaseline --no-daemon --no-parallel --max-workers=1 \
-            -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
-      - name: Show diff stats
-        run: |
-          ls -la app/lint-baseline.xml
-          grep -c "<issue" app/lint-baseline.xml
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lint-baseline
-          path: app/lint-baseline.xml
-          if-no-files-found: error
-
-  room-migration-tests:
-    name: Room migration tests (emulator)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: update/upstream-2.5.1
-          submodules: recursive
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '10'
-      - uses: oven-sh/setup-bun@v2
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Run Room migration tests
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: >-
-            ./gradlew :app:connectedDebugAndroidTest
-            -Pandroid.testInstrumentationRunnerArguments.class=me.rerere.rikkahub.data.db.AppDatabaseMigrationTest
-            --no-daemon --max-workers=2
-            -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Upload instrumentation results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: room-migration-results
-          path: app/build/reports/androidTests/**
-          if-no-files-found: ignore
+          if [ "$fail" -ne 0 ]; then echo "static checks failed"; exit 1; fi
+          echo "all static checks passed"

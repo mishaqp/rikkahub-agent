@@ -5,6 +5,8 @@ import java.io.FileInputStream
 import java.util.Properties
 
 val arm64Only = providers.gradleProperty("arm64Only").orNull == "true"
+val releaseVersionCode = providers.environmentVariable("VERSION_CODE").orNull?.toIntOrNull() ?: 184
+val updateApiUrl = providers.environmentVariable("UPDATE_API_URL").orNull.orEmpty()
 
 plugins {
     alias(libs.plugins.android.application)
@@ -21,7 +23,7 @@ android {
         applicationId = "me.mishaqp.rikkahub"
         minSdk = 26
         targetSdk = 37
-        versionCode = 184
+        versionCode = releaseVersionCode
         versionName = "2.5.0-agent.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -86,7 +88,7 @@ android {
             }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
-            buildConfigField("String", "UPDATE_API_URL", "\"\"")
+            buildConfigField("String", "UPDATE_API_URL", "\"${updateApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -95,7 +97,7 @@ android {
             }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
-            buildConfigField("String", "UPDATE_API_URL", "\"\"")
+            buildConfigField("String", "UPDATE_API_URL", "\"${updateApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         }
     }
     compileOptions {

@@ -12,6 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      VERSION_CODE: ${{ github.run_number }}
+      UPDATE_API_URL: ${{ vars.UPDATE_API_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +53,7 @@ jobs:
           python3 - <<'PY'
           import os, pathlib
           def esc(s):
-              return s.replace("\\", "\\\\\\").replace("\n", "\\n").replace("\r", "\\r")
+              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
           props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
                    "storePassword": os.environ["KEYSTORE_PASSWORD"],
                    "keyAlias": os.environ["KEY_ALIAS"], "keyPassword": os.environ["KEY_PASSWORD"]}
@@ -79,7 +82,7 @@ jobs:
             app/build/outputs/apk/release/*.apk
             BUILD_COMMIT.txt
           if-no-files-found: error
-      - name: Upload ABB
+      - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-release-aab
@@ -102,7 +105,7 @@ jobs:
           source = pathlib.Path("app/build.gradle.kts").read_text()
           version = re.search(r'versionName = "([^"]+)"', source).group(1)
           with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write("RELEASE_TAG=v"+version+"\n")
+              f.write("RELEASE_TAG=v" + version + "\n")
           PY
       - name: Publish signed release
         uses: softprops/action-gh-release@v2

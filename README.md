@@ -194,10 +194,10 @@ Screen readers are supported throughout: icon-only buttons, attachment chips, an
 
 ## Building from Source
 
-Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io) on your PATH — bun installs the web-ui dependencies, pnpm builds the bundle.
+Requires JDK 17 plus [bun](https://bun.sh) and [pnpm](https://pnpm.io) on your PATH — bun installs the web-ui dependencies, pnpm builds the bundle. `material3/material-color-utilities` is a git submodule, so clone with `--recurse-submodules` (or run `git submodule update --init --recursive` afterwards) — the build fails with `Unresolved reference: dynamiccolor` without it.
 
 ```bash
-git clone https://github.com/mishaqp/rikkahub-agent.git
+git clone --recurse-submodules https://github.com/mishaqp/rikkahub-agent.git
 cd rikkahub-agent
 ./gradlew :app:installDebug
 ```

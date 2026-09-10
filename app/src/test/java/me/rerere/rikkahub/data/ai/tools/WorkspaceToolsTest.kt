@@ -27,7 +27,7 @@ class WorkspaceToolsTest {
     }
 
     @Test
-    fun `skills is a writable root after the 2.5.1 port`() {
+    fun `skills is a writable root after the port`() {
         // Upstream 2.5.1 added /skills to WRITABLE_ROOT_PREFIXES, so workspace writes under it
         // skip the forced approval prompt. It is therefore no longer an "outside" path.
         assertFalse("/skills/foo".isOutsideWritableRoots())

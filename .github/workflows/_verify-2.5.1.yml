@@ -66,9 +66,15 @@ jobs:
           echo "computed VERSION_CODE: ${code:-<none>}"
 
           echo "=== 6. no llama.cpp / GGUF and a single submodule ==="
-          # Deliberately narrow: "llama" alone matches the Ollama search provider and the llama
-          # emoji, so only llama.cpp / GGUF artefacts count as a regression.
-          llama=$(grep -rniE "gguf|llama[-_ ]?cpp|libllama|llama\\.h" app/src ai/src local-llm/src workspace/src 2>/dev/null | grep -vi "ollama" || true)
+          # Deliberately narrow, and sources only: "llama" alone matches the Ollama search
+          # provider and the llama emoji, while fixture data (base64 trace blobs) contains the
+          # letters "gguf" by chance. Only real llama.cpp/GGUF artefacts may count as a regression.
+          llama=$(grep -rniE "gguf|llama[-_ ]?cpp|libllama|llama\\.h" \
+            --include="*.kt" --include="*.kts" --include="*.java" \
+            --include="*.c" --include="*.cc" --include="*.cpp" --include="*.h" --include="*.hpp" \
+            --include="*.cmake" --include="CMakeLists.txt" --include="*.toml" --include="*.pro" \
+            app/src ai/src local-llm/src workspace/src 2>/dev/null \
+            | grep -vi "ollama" | cut -c1-200 | head -20 || true)
           if [ -n "$llama" ]; then note "llama.cpp/GGUF references found"; echo "$llama"; fi
           subs=$(grep -c '^\[submodule' .gitmodules || true)
           [ "$subs" = "1" ] || note "expected exactly one submodule, found $subs"

@@ -22,9 +22,9 @@ jobs:
           git config user.email "probe@example.com"
           git config merge.conflictStyle diff3
           git remote add upstream https://github.com/rikkahub/rikkahub.git
-          git fetch --no-tags upstream 2.5.1
+          git fetch --no-tags upstream refs/tags/2.5.1:refs/remotes/upstream/2.5.1
           echo "HEAD:           $(git rev-parse HEAD)"
-          echo "upstream/2.5.1: $(git rev-parse upstream/2.5.1)"
+          echo "upstream/2.5.1: $(git rev-parse refs/remotes/upstream/2.5.1)"
           echo "merge-base:     $(git merge-base HEAD upstream/2.5.1)"
           git merge --no-ff --no-commit upstream/2.5.1
           echo "RESULT_CODE: $?"

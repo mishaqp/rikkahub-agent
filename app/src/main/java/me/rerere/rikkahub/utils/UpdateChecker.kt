@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import me.rerere.common.http.await
@@ -65,7 +66,7 @@ class UpdateChecker(
                             .build()
                     ).await()
                     if (response.isSuccessful) {
-                        json.decodeFromString<UpdateInfo>(response.body.string())
+                        decodeUpdateInfo(response.body.string())
                     } else {
                         throw Exception("Failed to fetch update info")
                     }
@@ -103,6 +104,44 @@ class UpdateChecker(
         }
     }
 }
+
+/**
+ * The endpoint configured through [BuildConfig.UPDATE_API_URL] can be either this fork's own
+ * hand-written `UpdateInfo` document or a plain GitHub `releases/latest` payload (the
+ * repository variable points at `mishaqp/rikkahub-agent`). Accept both shapes so the update
+ * card keeps working whichever the operator configures.
+ */
+private fun decodeUpdateInfo(body: String): UpdateInfo =
+    runCatching { json.decodeFromString<UpdateInfo>(body) }.getOrElse {
+        val release = json.decodeFromString<GitHubRelease>(body)
+        UpdateInfo(
+            version = release.tagName.removePrefix("v"),
+            publishedAt = release.publishedAt,
+            changelog = release.body,
+            downloads = release.assets.map { asset ->
+                UpdateDownload(
+                    name = asset.name,
+                    url = asset.browserDownloadUrl,
+                    size = "%.1f MB".format(asset.size / 1024.0 / 1024.0),
+                )
+            },
+        )
+    }
+
+@Serializable
+private data class GitHubRelease(
+    @SerialName("tag_name") val tagName: String = "",
+    @SerialName("published_at") val publishedAt: String = "",
+    val body: String = "",
+    val assets: List<GitHubAsset> = emptyList(),
+)
+
+@Serializable
+private data class GitHubAsset(
+    val name: String = "",
+    @SerialName("browser_download_url") val browserDownloadUrl: String = "",
+    val size: Long = 0,
+)
 
 @Serializable
 data class UpdateDownload(

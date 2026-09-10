@@ -6,7 +6,16 @@ import java.util.Properties
 
 val arm64Only = providers.gradleProperty("arm64Only").orNull == "true"
 val releaseVersionCode = providers.environmentVariable("VERSION_CODE").orNull?.toIntOrNull() ?: 184
-val updateApiUrl = providers.environmentVariable("UPDATE_API_URL").orNull.orEmpty()
+// Update-check endpoint baked into BuildConfig.UPDATE_API_URL. CI passes the repository
+// variable UPDATE_API_URL; when it is absent or blank the build falls back to this fork's own
+// releases feed, so an artifact can never silently ship pointing at another repository.
+val forkReleaseUrl = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"
+val updateApiUrl = providers.environmentVariable("UPDATE_API_URL").orNull
+    ?.takeIf { it.isNotBlank() }
+    ?: forkReleaseUrl
+check(!updateApiUrl.contains("ExTV/rikkahub-agent")) {
+    "UPDATE_API_URL must point at this fork (mishaqp/rikkahub-agent), got: $updateApiUrl"
+}
 
 plugins {
     alias(libs.plugins.android.application)

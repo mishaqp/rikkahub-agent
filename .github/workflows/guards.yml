@@ -1,0 +1,75 @@
+name: Guards
+# Repository-level regression guards for the 2.5.1 port. Fast, no build: they fail the job when a
+# shipped source starts pointing at the parent repository, when the update feed loses this fork's
+# URL, when the Room chain loses a step, when upstream stops being an ancestor of HEAD, or when
+# llama.cpp/GGUF artefacts reappear in shipped code.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: guards-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  guards:
+    name: Repository guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Guards
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          note() { echo "::error::$1"; fail=1; }
+
+          echo "=== 1. no shipped source points at the parent repository ==="
+          hits=$(grep -rn "ExTV/rikkahub-agent" app/src ai/src local-llm/src workspace/src web-ui 2>/dev/null || true)
+          if [ -n "$hits" ]; then note "ExTV/rikkahub-agent referenced in sources"; echo "$hits"; fi
+          unexpected=$(grep -n "ExTV/rikkahub-agent" app/build.gradle.kts | grep -v 'check(!updateApiUrl' || true)
+          if [ -n "$unexpected" ]; then note "unexpected ExTV/rikkahub-agent reference in app/build.gradle.kts"; echo "$unexpected"; fi
+
+          echo "=== 2. the update feed points at this fork ==="
+          grep -q 'const val LATEST_URL = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"' \
+            app/src/main/java/me/rerere/rikkahub/reliability/GitHubReleaseChecker.kt \
+            || note "GitHubReleaseChecker.LATEST_URL does not point at mishaqp/rikkahub-agent"
+          grep -q 'val forkReleaseUrl = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"' \
+            app/build.gradle.kts \
+            || note "app/build.gradle.kts has no mishaqp fallback URL"
+
+          echo "=== 3. the Room chain keeps 23 -> 24 and 30 -> 31 ==="
+          grep -q "AutoMigration(from = 23, to = 24)" app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt || note "AutoMigration(23, 24) is missing"
+          grep -q "AutoMigration(from = 30, to = 31)" app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt || note "AutoMigration(30, 31) is missing"
+          grep -q "^    version = 31," app/src/main/java/me/rerere/rikkahub/data/db/AppDatabase.kt || note "AppDatabase version = 31 is missing or mis-indented"
+
+          echo "=== 4. upstream 2.5.1 stays an ancestor ==="
+          git remote add upstream https://github.com/rikkahub/rikkahub.git 2>/dev/null || true
+          git fetch --no-tags upstream refs/tags/2.5.1:refs/remotes/upstream/2.5.1 >/dev/null 2>&1 || true
+          if git merge-base --is-ancestor refs/remotes/upstream/2.5.1 HEAD; then echo "OK: a9b35ba2 is an ancestor of HEAD"
+          else note "upstream 2.5.1 is not an ancestor of HEAD"; fi
+
+          echo "=== 5. single-source versionCode ==="
+          code="$(bash .github/scripts/version-code.sh)" || note "version-code.sh failed"
+          echo "computed VERSION_CODE: $code"
+
+          echo "=== 6. no llama.cpp / GGUF in shipped code, single submodule ==="
+          llama=$(grep -rniE "gguf|llama[-_ ]?cpp|libllama|llama\.h" \
+            --include="*.kt" --include="*.kts" --include="*.java" \
+            --include="*.c" --include="*.cc" --include="*.cpp" --include="*.h" --include="*.hpp" \
+            --include="*.cmake" --include="CMakeLists.txt" --include="*.toml" --include="*.pro" \
+            app/src/main ai/src/main local-llm/src/main workspace/src/main 2>/dev/null \
+            | grep -vi "ollama" | cut -c1-200 | head -20 || true)
+          if [ -n "$llama" ]; then note "llama.cpp/GGUF references found"; echo "$llama"; fi
+          subs=$(grep -c '^\[submodule' .gitmodules || true)
+          [ "$subs" = "1" ] || note "expected exactly one submodule, found $subs"
+
+          if [ "$fail" -ne 0 ]; then echo "guards failed"; exit 1; fi
+          echo "all guards passed"

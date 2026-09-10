@@ -64,7 +64,7 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         WorkspaceEntity::class,
         FolderEntity::class,
     ],
-    version = 30,
+    version = 31,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -83,6 +83,11 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         AutoMigration(from = 20, to = 21, spec = Migration_20_21::class),
         AutoMigration(from = 21, to = 22, spec = Migration_21_22::class),
         AutoMigration(from = 22, to = 23, spec = Migration_22_23::class),
+        // v24: the step upstream shipped alongside 2.2.6 adds the agent_runs table
+        // (autonomous-run ledger). The fork jumped straight from 22 -> 23 to 24 -> 25, which
+        // left a hole for any install still sitting on v23. Both 23.json and 24.json exist,
+        // so Room derives the schema diff itself.
+        AutoMigration(from = 23, to = 24),
         // v25: upstream 2.2.6 added conversation-level custom_system_prompt / mode_injection_ids
         // / lorebook_ids columns (all carry defaultValue, so a plain auto-migration suffices).
         AutoMigration(from = 24, to = 25),
@@ -108,6 +113,8 @@ import me.rerere.rikkahub.workflow.db.WorkflowRunEntity
         // from Room. Nullable-equivalent (empty string default, matching folder_id), so a plain
         // auto-migration suffices.
         AutoMigration(from = 29, to = 30),
+        // v31: upstream 2.5.1 added WorkspaceEntity.shellCompatibilityMode (shell_compatibility_mode, Int, defaultValue 0). Pure column addition, so Room derives it.
+        AutoMigration(from = 30, to = 31),
     ]
 )
 @TypeConverters(TokenUsageConverter::class)

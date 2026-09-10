@@ -1,23 +1,28 @@
 name: release
+# Manual-only publishing. There is deliberately no `push` trigger: a merge to master must never
+# publish or overwrite a GitHub Release by itself. Dispatch this workflow from master by hand,
+# after CI is green on the commit and the APK has been installed and checked on a real device.
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
+
 permissions:
   contents: write
+
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
+
 jobs:
   build:
+    # Publishing is a master-only action.
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      VERSION_CODE: ${{ github.run_number }}
-      UPDATE_API_URL: ${{ vars.UPDATE_API_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history: versionCode is `git rev-list --count HEAD`.
+          fetch-depth: 0
           submodules: recursive
       - name: Record source commit
         run: git rev-parse HEAD | tee BUILD_COMMIT.txt
@@ -33,6 +38,11 @@ jobs:
           version: '10'
       - uses: oven-sh/setup-bun@v2
       - uses: gradle/actions/setup-gradle@v4
+      - name: Compute VERSION_CODE
+        run: |
+          CODE="$(bash .github/scripts/version-code.sh)"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Vulkan build dependencies
         run: |
           sudo apt-get update
@@ -50,15 +60,12 @@ jobs:
             exit 1
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          python3 - <<'PY'
-          import os, pathlib
-          def esc(s):
-              return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
-          props = {"storeFile": os.environ["RUNNER_TEMP"] + "/release.keystore",
-                   "storePassword": os.environ["KEYSTORE_PASSWORD"],
-                   "keyAlias": os.environ["KEY_ALIAS"], "keyPassword": os.environ["KEY_PASSWORD"]}
-          pathlib.Path("local.properties").write_text("\n".join(k+"="+esc(v) for k,v in props.items())+"\n")
-          PY
+          cat > local.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.keystore
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
           echo "Release signing: using repository secrets" >> "$GITHUB_STEP_SUMMARY"
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
@@ -74,6 +81,46 @@ jobs:
       - name: Web typecheck
         working-directory: web-ui
         run: pnpm typecheck
+      - name: Verify APK before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "APK: $APK"
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+
+          "$AAPT2" dump badging "$APK" | tee /tmp/badging.txt | grep -E "^package:|^native-code:"
+          if grep -q "testOnly=.true." /tmp/badging.txt; then echo "::error::APK is testOnly"; exit 1; fi
+          grep -q "package: name='me.mishaqp.rikkahub'" /tmp/badging.txt || { echo "::error::unexpected package name"; exit 1; }
+          grep -q "native-code: 'arm64-v8a'" /tmp/badging.txt || { echo "::error::unexpected ABI set"; exit 1; }
+          EXPECTED_CODE="${VERSION_CODE:?VERSION_CODE is not set}"
+          ACTUAL_CODE=$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" /tmp/badging.txt | head -1)
+          echo "versionCode: actual=$ACTUAL_CODE computed=$EXPECTED_CODE"
+          [ "$ACTUAL_CODE" = "$EXPECTED_CODE" ] || { echo "::error::APK versionCode $ACTUAL_CODE != computed $EXPECTED_CODE"; exit 1; }
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner.txt
+          EXPECTED_CERT=973f6443a15702066b0e97ff807dca2009461e1f3523cfa4d92d073a2fdccd4d
+          ACTUAL_CERT=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 "certificate SHA-256 digest" | awk '{print $NF}')
+          [ "$ACTUAL_CERT" = "$EXPECTED_CERT" ] || { echo "::error::unexpected signing certificate"; exit 1; }
+
+          APK_PATH="$APK" python3 - <<'PY'
+          import os, re, sys, zipfile
+          z = zipfile.ZipFile(os.environ["APK_PATH"])
+          bad = good = 0
+          for name in z.namelist():
+              if not name.endswith(".dex"):
+                  continue
+              data = z.read(name)
+              bad += data.count(b"ExTV/rikkahub-agent")
+              good += data.count(b"mishaqp/rikkahub-agent")
+          print("ExTV/rikkahub-agent occurrences:", bad)
+          print("mishaqp/rikkahub-agent occurrences:", good)
+          if bad:
+              sys.exit("FAIL: the APK still points at ExTV/rikkahub-agent")
+          if not good:
+              sys.exit("FAIL: mishaqp/rikkahub-agent is missing from the APK")
+          PY
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

@@ -52,6 +52,7 @@ import me.rerere.ai.ui.toMetadata
 import me.rerere.ai.util.HttpException
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.configureReferHeaders
+import me.rerere.ai.util.configureSessionHeaders
 import me.rerere.ai.util.encodeBase64
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
@@ -104,11 +105,7 @@ class ChatCompletionsAPI(
             .post(json.encodeToString(requestBody).toRequestBody("application/json".toMediaType()))
             .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
             .configureReferHeaders(providerSetting.baseUrl)
-            .apply {
-                if (providerSetting.baseUrl.toHttpUrl().host == "opencode.ai") {
-                    params.sessionId?.let { header("x-opencode-session", it) }
-                }
-            }
+            .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
             .build()
 
         if (Logging.isDebugLoggingEnabled()) {
@@ -163,11 +160,7 @@ class ChatCompletionsAPI(
             .addHeader("Authorization", "Bearer ${keyRoulette.next(providerSetting.apiKey, providerSetting.id.toString())}")
             .addHeader("Content-Type", "application/json")
             .configureReferHeaders(providerSetting.baseUrl)
-            .apply {
-                if (providerSetting.baseUrl.toHttpUrl().host == "opencode.ai") {
-                    params.sessionId?.let { header("x-opencode-session", it) }
-                }
-            }
+            .configureSessionHeaders(providerSetting.baseUrl, params.sessionId)
             .build()
 
         if (Logging.isDebugLoggingEnabled()) {

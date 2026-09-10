@@ -66,14 +66,15 @@ jobs:
           echo "computed VERSION_CODE: ${code:-<none>}"
 
           echo "=== 6. no llama.cpp / GGUF and a single submodule ==="
-          # Deliberately narrow, and sources only: "llama" alone matches the Ollama search
-          # provider and the llama emoji, while fixture data (base64 trace blobs) contains the
-          # letters "gguf" by chance. Only real llama.cpp/GGUF artefacts may count as a regression.
+          # Deliberately narrow, and shipped code only: "llama" alone matches the Ollama search
+          # provider and the llama emoji, fixture data (base64 trace blobs) contains "gguf" by
+          # chance, and ModelInstallTest asserts that a .gguf extension is *unsupported*. Only real
+          # llama.cpp/GGUF artefacts in main sources may count as a regression.
           llama=$(grep -rniE "gguf|llama[-_ ]?cpp|libllama|llama\\.h" \
             --include="*.kt" --include="*.kts" --include="*.java" \
             --include="*.c" --include="*.cc" --include="*.cpp" --include="*.h" --include="*.hpp" \
             --include="*.cmake" --include="CMakeLists.txt" --include="*.toml" --include="*.pro" \
-            app/src ai/src local-llm/src workspace/src 2>/dev/null \
+            app/src/main ai/src/main local-llm/src/main workspace/src/main 2>/dev/null \
             | grep -vi "ollama" | cut -c1-200 | head -20 || true)
           if [ -n "$llama" ]; then note "llama.cpp/GGUF references found"; echo "$llama"; fi
           subs=$(grep -c '^\[submodule' .gitmodules || true)

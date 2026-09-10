@@ -1,6 +1,5 @@
 package me.rerere.rikkahub.data.db
 
-import androidx.room.AutoMigrationSpec
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
@@ -28,7 +27,7 @@ class AppDatabaseMigrationTest {
     val helper: MigrationTestHelper = MigrationTestHelper(
         InstrumentationRegistry.getInstrumentation(),
         AppDatabase::class,
-        emptyList<AutoMigrationSpec>(),
+        emptyList(),
         FrameworkSQLiteOpenHelperFactory(),
     )
 

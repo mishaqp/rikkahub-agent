@@ -6,17 +6,16 @@
 
 **Your phone, automated.**
 
-A fork of [RikkaHub](https://github.com/rikkahub/rikkahub) that turns the native Android LLM chat client into a real on-device agent: 80+ device tools, AI-authored workflows, scheduled jobs, an in-app browser the AI drives, keyless web search, a Linux workspace, SSH, screen automation, file manager, music player, voice transcription, downloadable on-device LLMs, and a remote Telegram bot. All opt-in.
+A fork of [rikkahub-agent](https://github.com/ExTV/rikkahub-agent) — itself a fork of [RikkaHub](https://github.com/rikkahub/rikkahub) — that turns the native Android LLM chat client into a real on-device agent: 80+ device tools, AI-authored workflows, scheduled jobs, an in-app browser the AI drives, keyless web search, a Linux workspace, SSH, screen automation, file manager, music player, voice transcription, downloadable on-device LLMs, and a remote Telegram bot. All opt-in.
 
 <p>
-  <a href="https://github.com/ExTV/rikkahub-agent/releases"><img src="https://img.shields.io/github/v/release/ExTV/rikkahub-agent?include_prereleases&style=flat-square&label=release&color=blue" alt="Release" /></a>
-  <a href="https://github.com/ExTV/rikkahub-agent/releases"><img src="https://img.shields.io/github/downloads/ExTV/rikkahub-agent/total?style=flat-square&color=brightgreen" alt="Downloads" /></a>
-  <a href="https://github.com/ExTV/rikkahub-agent/stargazers"><img src="https://img.shields.io/github/stars/ExTV/rikkahub-agent?style=flat-square&color=yellow" alt="Stars" /></a>
+  <a href="https://github.com/mishaqp/rikkahub-agent/releases"><img src="https://img.shields.io/github/v/release/mishaqp/rikkahub-agent?include_prereleases&style=flat-square&label=release&color=blue" alt="Release" /></a>
+  <a href="https://github.com/mishaqp/rikkahub-agent/releases"><img src="https://img.shields.io/github/downloads/mishaqp/rikkahub-agent/total?style=flat-square&color=brightgreen" alt="Downloads" /></a>
+  <a href="https://github.com/mishaqp/rikkahub-agent/stargazers"><img src="https://img.shields.io/github/stars/mishaqp/rikkahub-agent?style=flat-square&color=yellow" alt="Stars" /></a>
   <img src="https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 8+" />
 </p>
 
-<a href="https://extv.github.io/rikkahub-agent/">Website</a> ·
-<a href="https://github.com/ExTV/rikkahub-agent/releases/latest">Download</a> ·
+<a href="https://github.com/mishaqp/rikkahub-agent/releases/latest">Download</a> ·
 <a href="#features">Features</a> ·
 <a href="#quick-start">Quick Start</a> ·
 <a href="#building-from-source">Build</a>
@@ -144,7 +143,7 @@ Passwords and API keys never hit log files. Cloud backups skip saved credentials
 
 ### 1. Install
 
-Download the latest `*-release.apk` from [Releases](https://github.com/ExTV/rikkahub-agent/releases/latest). Allow install from unknown sources, then open.
+Download the latest `*-release.apk` from [Releases](https://github.com/mishaqp/rikkahub-agent/releases/latest). Allow install from unknown sources, then open.
 
 > **Note:** If you have an old debug build installed, uninstall it first — the release build is signed differently.
 
@@ -198,7 +197,7 @@ Screen readers are supported throughout: icon-only buttons, attachment chips, an
 Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io) on your PATH — bun installs the web-ui dependencies, pnpm builds the bundle.
 
 ```bash
-git clone https://github.com/ExTV/rikkahub-agent.git
+git clone https://github.com/mishaqp/rikkahub-agent.git
 cd rikkahub-agent
 ./gradlew :app:installDebug
 ```
@@ -211,14 +210,15 @@ Stands on the shoulders of giants:
 
 | Project | Role |
 |---|---|
-| [RikkaHub](https://github.com/rikkahub/rikkahub) | The upstream chat client this forks |
+| [RikkaHub](https://github.com/rikkahub/rikkahub) | The original chat client |
+| [rikkahub-agent (ExTV)](https://github.com/ExTV/rikkahub-agent) | The agent fork this repository builds on |
 | [cron-utils](https://github.com/jmrozanec/cron-utils) | Cron parser for the scheduler |
 | [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | On-device speech-to-text via Termux |
 | [Termux](https://github.com/termux/termux-app) | Shell + package manager |
 | [JSch (mwiede fork)](https://github.com/mwiede/jsch) | Native SSH client |
 | [FlorisBoard](https://github.com/florisboard/florisboard) | Base for the companion [agent-keyboard](https://github.com/ExTV/agent-keyboard) |
 
-This fork is unaffiliated with upstream RikkaHub maintainers. All credit for the underlying chat client, provider abstraction, and UI design goes to the upstream team.
+This fork is unaffiliated with the upstream RikkaHub maintainers and with the rikkahub-agent project. All credit for the underlying chat client, provider abstraction, and UI design goes to the upstream team.
 
 ---
 

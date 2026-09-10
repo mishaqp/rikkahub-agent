@@ -5,17 +5,22 @@ import java.io.FileInputStream
 import java.util.Properties
 
 val arm64Only = providers.gradleProperty("arm64Only").orNull == "true"
-val releaseVersionCode = providers.environmentVariable("VERSION_CODE").orNull?.toIntOrNull() ?: 184
-// Update-check endpoint baked into BuildConfig.UPDATE_API_URL. CI passes the repository
-// variable UPDATE_API_URL; when it is absent or blank the build falls back to this fork's own
-// releases feed, so an artifact can never silently ship pointing at another repository.
-val forkReleaseUrl = "https://api.github.com/repos/mishaqp/rikkahub-agent/releases/latest"
-val updateApiUrl = providers.environmentVariable("UPDATE_API_URL").orNull
-    ?.takeIf { it.isNotBlank() }
-    ?: forkReleaseUrl
-check(!updateApiUrl.contains("ExTV/rikkahub-agent")) {
-    "UPDATE_API_URL must point at this fork (mishaqp/rikkahub-agent), got: $updateApiUrl"
+// versionCode is produced by .github/scripts/version-code.sh (git rev-list --count HEAD) so the
+// same commit always reports the same number regardless of which workflow builds it. The
+// fallback only applies to local builds where the variable is absent.
+val minVersionCode = 185
+val maxVersionCode = 2_100_000_000
+val versionCodeEnv = providers.environmentVariable("VERSION_CODE").orNull
+val releaseVersionCode = versionCodeEnv?.trim()?.toIntOrNull() ?: minVersionCode
+if (versionCodeEnv != null) {
+    check(versionCodeEnv.trim().toIntOrNull() != null) {
+        "VERSION_CODE must be an integer, got '$versionCodeEnv'"
+    }
+    check(releaseVersionCode in minVersionCode..maxVersionCode) {
+        "VERSION_CODE must be within $minVersionCode..$maxVersionCode, got $releaseVersionCode"
+    }
 }
+val updateApiUrl = providers.environmentVariable("UPDATE_API_URL").orNull.orEmpty()
 
 plugins {
     alias(libs.plugins.android.application)

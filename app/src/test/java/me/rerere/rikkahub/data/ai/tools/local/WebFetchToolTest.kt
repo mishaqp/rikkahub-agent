@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.ai.tools.local
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.Tool
@@ -254,15 +255,33 @@ class WebFetchToolTest {
     fun `raw links and metadata are never focus filtered`() {
         val html = focusedHtml()
 
+        val unfocusedLinks = envelopeJson(html, mode = FetchExtract.LINKS)
+            .let { json -> json["links"]!!.jsonArray.map { it.jsonObject["href"]!!.jsonPrimitive.content } }
+
         for (mode in listOf(FetchExtract.LINKS, FetchExtract.METADATA)) {
             val json = envelopeJson(html, mode = mode, focus = "migration queue 2.5.1")
-            assertEquals(
-                "focus must not apply to ${mode.name.lowercase()}",
-                false,
-                json["focus_applied"]!!.jsonPrimitive.content.toBoolean(),
+
+            // Non-text modes are untouched by focus: none of the focus/provenance keys appear.
+            assertFalse(
+                "focus must not add focus fields to ${mode.name.lowercase()}",
+                json.containsKey("focus_applied"),
             )
+            assertFalse(
+                "focus must not add a fenced content value to ${mode.name.lowercase()}",
+                json.containsKey("content"),
+            )
+            assertFalse(
+                "focus must not mark ${mode.name.lowercase()} untrusted",
+                json.containsKey("untrusted"),
+            )
+
+            if (mode == FetchExtract.LINKS) {
+                val focusedLinks = json["links"]!!.jsonArray
+                    .map { it.jsonObject["href"]!!.jsonPrimitive.content }
+                assertEquals("focus must not change the link list", unfocusedLinks, focusedLinks)
+            }
         }
-        // RAW never reaches buildExtractEnvelope at all; its branch is asserted below.
+        // RAW never reaches buildExtractEnvelope; its own branch is covered by the cap tests above.
         assertTrue(html.contains("migration queue"))
     }
 

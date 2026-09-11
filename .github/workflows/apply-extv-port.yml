@@ -21,6 +21,29 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Disambiguate list-only replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/apply-extv-port.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''replace_once(
+              "workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt",
+              "            .take(config.maxListEntries)\\n",
+              "            .take(limit)\\n",
+          )'''
+          new = '''replace_once(
+              "workspace/src/main/java/me/rerere/workspace/WorkspaceFileSystem.kt",
+              "            .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })\\n            .take(config.maxListEntries)\\n            .map { it.toEntry(root) }\\n",
+              "            .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })\\n            .take(limit)\\n            .map { it.toEntry(root) }\\n",
+          )'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one script block, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply checked source transformations
         shell: bash
         run: |

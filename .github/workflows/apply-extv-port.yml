@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rm .github/scripts/apply-extv-port.py
+          git rm -f .github/scripts/apply-extv-port.py
           git rm .github/patches/extv-2.5.1-agent-selected.patch
           git rm .github/workflows/apply-extv-port.yml
           git add -A

@@ -1,0 +1,41 @@
+name: Apply selected ExTV port
+
+on:
+  push:
+    branches:
+      - port/extv-2.5.1-agent-fixes
+    paths:
+      - .github/workflows/apply-extv-port.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/extv-2.5.1-agent-fixes
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Validate and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/patches/extv-2.5.1-agent-selected.patch
+          git apply .github/patches/extv-2.5.1-agent-selected.patch
+
+      - name: Commit selected fixes and remove one-shot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/patches/extv-2.5.1-agent-selected.patch
+          git rm .github/workflows/apply-extv-port.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "port: selected ExTV 2.5.1 agent fixes"
+          git push origin HEAD:port/extv-2.5.1-agent-fixes

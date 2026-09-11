@@ -51,11 +51,12 @@ jobs:
           CODE="$(bash .github/scripts/version-code.sh)"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_STEP_SUMMARY"
-      - name: Run AI, LiteRT and app unit tests
+      - name: Run AI, LiteRT, workspace and app unit tests
         run: >-
           ./gradlew
           :ai:testDebugUnitTest
           :local-llm:testDebugUnitTest
+          :workspace:testDebugUnitTest
           :app:testDebugUnitTest
           --no-daemon
           --max-workers=2

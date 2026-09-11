@@ -24,6 +24,17 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      # Raw-NUL guard. grep reports a file containing a 0x00 byte as "Binary file
+      # ... matches" and prints nothing, so every guard above can silently skip
+      # such a file. This step reads raw bytes instead, and its own --self-test
+      # proves the scanner detects a real 0x00 while accepting the textual
+      # \u0000 escape. A raw NUL in a text source is always a mistake.
+      - name: No raw NUL bytes in tracked text sources
+        shell: bash
+        run: |
+          python3 .github/scripts/check-no-nul.py --self-test
+          python3 .github/scripts/check-no-nul.py .
+
       - name: Guards
         shell: bash
         run: |

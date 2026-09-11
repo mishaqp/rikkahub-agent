@@ -111,6 +111,7 @@ fun WorkspaceDetailPage(id: String) {
     val installProgress by vm.installProgress.collectAsStateWithLifecycle()
     val installError by vm.installError.collectAsStateWithLifecycle()
     val folderExportResult by vm.folderExportResult.collectAsStateWithLifecycle()
+    val folderExportProgress by vm.folderExportProgress.collectAsStateWithLifecycle()
     val settingsError by vm.settingsError.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState { 2 }
     val scope = rememberCoroutineScope()
@@ -154,6 +155,8 @@ fun WorkspaceDetailPage(id: String) {
         vm.goUp()
     }
 
+    BackHandler(enabled = folderExportProgress != null) {}
+
     LaunchedEffect(folderExportResult) {
         val result = folderExportResult ?: return@LaunchedEffect
         val message = if (result.failures > 0) {
@@ -163,6 +166,26 @@ fun WorkspaceDetailPage(id: String) {
         }
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         vm.dismissFolderExportResult()
+    }
+
+    folderExportProgress?.let { progress ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(progress.folderName) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LinearProgressIndicator(
+                        progress = { (progress.done.toFloat() / progress.total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "${progress.done} / ${progress.total}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = {},
+        )
     }
 
     Scaffold(

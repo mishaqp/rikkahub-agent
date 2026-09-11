@@ -8,21 +8,40 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * Pure command-execution core for the Shizuku user service: runs [command] through a shell,
- * captures bounded stdout/stderr, and enforces [timeoutMs] by destroying the process.
+ * Pure command-execution core shared by the Shizuku and root backends. It captures bounded
+ * stdout/stderr and enforces [timeoutMs] by destroying the process.
  *
  * Deliberately free of Android and Shizuku dependencies: [ProcessBuilder] runs the same way
- * whether this code executes inside the app's own process or inside the separate shell-UID
- * process Shizuku spawns for [ShizukuUserService], so it also runs (and is unit-tested) as a
- * plain JVM process launcher on the host, no device or emulator required. Reuses
+ * whether this code executes inside the app process, inside the separate shell-UID process
+ * Shizuku spawns for [ShizukuUserService], or in a host JVM unit test. Reuses
  * [BoundedOutputStream] so stdout/stderr truncation behaves identically to the other shell
  * tools (SSH, Termux).
  */
 internal object ShizukuCommandRunner {
 
-    fun run(command: String, timeoutMs: Int, maxStdoutBytes: Int, maxStderrBytes: Int): JsonObject {
+    /** Run a normal shell command inside the current process' UID. */
+    fun run(command: String, timeoutMs: Int, maxStdoutBytes: Int, maxStderrBytes: Int): JsonObject =
+        runProcess(
+            processCommand = listOf("sh", "-c", command),
+            timeoutMs = timeoutMs,
+            maxStdoutBytes = maxStdoutBytes,
+            maxStderrBytes = maxStderrBytes,
+        )
+
+    /**
+     * Run an explicit argv without routing it through another shell first. Root uses this as
+     * `su -c <command>`, which avoids hand-built shell quoting around an LLM supplied command.
+     */
+    fun runProcess(
+        processCommand: List<String>,
+        timeoutMs: Int,
+        maxStdoutBytes: Int,
+        maxStderrBytes: Int,
+    ): JsonObject {
+        require(processCommand.isNotEmpty()) { "processCommand must not be empty" }
+
         val process = try {
-            ProcessBuilder("sh", "-c", command).start()
+            ProcessBuilder(processCommand).start()
         } catch (e: IOException) {
             return buildJsonObject {
                 put("error", "exec_failed")
@@ -32,16 +51,24 @@ internal object ShizukuCommandRunner {
 
         val stdoutSink = BoundedOutputStream(maxStdoutBytes)
         val stderrSink = BoundedOutputStream(maxStderrBytes)
-        // Drain both streams concurrently on daemon threads. A command that fills its stdout
-        // pipe buffer (a common size is 64KB) will block forever if nothing reads it, so
-        // waitFor() alone, without a concurrent reader, can deadlock on chatty output long
-        // before timeoutMs ever fires.
-        val stdoutThread = Thread({ runCatching { process.inputStream.copyTo(stdoutSink) } }, "shizuku-stdout")
+        // Drain both streams concurrently. A chatty process can otherwise fill a pipe buffer
+        // and deadlock before waitFor() ever reaches its timeout.
+        val stdoutThread = Thread({ runCatching { process.inputStream.copyTo(stdoutSink) } }, "shell-stdout")
             .apply { isDaemon = true; start() }
-        val stderrThread = Thread({ runCatching { process.errorStream.copyTo(stderrSink) } }, "shizuku-stderr")
+        val stderrThread = Thread({ runCatching { process.errorStream.copyTo(stderrSink) } }, "shell-stderr")
             .apply { isDaemon = true; start() }
 
-        val finished = process.waitFor(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        val finished = try {
+            process.waitFor(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        } catch (e: InterruptedException) {
+            // runInterruptible() uses thread interruption for coroutine cancellation. Never
+            // leave a privileged child process running when its caller is cancelled.
+            process.destroyForcibly()
+            stdoutThread.join(1_000)
+            stderrThread.join(1_000)
+            Thread.currentThread().interrupt()
+            throw e
+        }
         if (!finished) {
             process.destroyForcibly()
             stdoutThread.join(1_000)

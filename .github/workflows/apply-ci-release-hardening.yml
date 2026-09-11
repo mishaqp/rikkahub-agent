@@ -1,0 +1,40 @@
+name: Apply CI release hardening
+
+on:
+  push:
+    branches:
+      - port/extv-2.5.1-agent-fixes
+    paths:
+      - .github/workflows/apply-ci-release-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@v4
+        with:
+          ref: port/extv-2.5.1-agent-fixes
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply checked CI/release transformations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/apply-ci-release-hardening.py
+
+      - name: Commit hardening and remove one-shot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/scripts/apply-ci-release-hardening.py
+          git rm .github/workflows/apply-ci-release-hardening.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: harden build and release workflows"
+          git push origin HEAD:port/extv-2.5.1-agent-fixes

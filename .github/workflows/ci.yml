@@ -118,24 +118,16 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
           echo "Release signing: using repository secrets" >> $GITHUB_STEP_SUMMARY
-      - name: Release lint
-        timeout-minutes: 40
+      - name: Lint and build arm64 release APK + AAB
+        timeout-minutes: 75
         run: >-
-          ./gradlew :app:lintRelease -Parm64Only=true
+          ./gradlew
+          :app:lintRelease
+          :app:assembleRelease
+          :app:bundleRelease
+          -Parm64Only=true
           --no-daemon --no-parallel --max-workers=1 --console=plain
           -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
-      - name: Build arm64 release APK
-        timeout-minutes: 30
-        run: >-
-          ./gradlew :app:assembleRelease -Parm64Only=true
-          --no-daemon --max-workers=2
-          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Build arm64 release AAB
-        timeout-minutes: 20
-        run: >-
-          ./gradlew :app:bundleRelease -Parm64Only=true
-          --no-daemon --max-workers=2
-          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
       - name: Verify APK (identity, signature and update URL)
         shell: bash
         run: |
@@ -148,7 +140,10 @@ jobs:
           "$AAPT2" dump badging "$APK" | tee /tmp/badging.txt | grep -E "^package:|^native-code:"
           if grep -q "testOnly=.true." /tmp/badging.txt; then echo "::error::APK is testOnly"; exit 1; fi
           grep -q "package: name='me.mishaqp.rikkahub'" /tmp/badging.txt || { echo "::error::unexpected package name"; exit 1; }
-          grep -q "versionName='2.5.1-agent.1'" /tmp/badging.txt || { echo "::error::unexpected versionName"; exit 1; }
+          EXPECTED_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          [ -n "$EXPECTED_NAME" ] || { echo "::error::could not read versionName from app/build.gradle.kts"; exit 1; }
+          echo "versionName: expected=$EXPECTED_NAME"
+          grep -Fq "versionName='$EXPECTED_NAME'" /tmp/badging.txt || { echo "::error::unexpected versionName"; exit 1; }
           grep -q "native-code: 'arm64-v8a'" /tmp/badging.txt || { echo "::error::unexpected ABI set"; exit 1; }
           EXPECTED_CODE="${VERSION_CODE:?VERSION_CODE is not set}"
           ACTUAL_CODE=$(sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" /tmp/badging.txt | head -1)

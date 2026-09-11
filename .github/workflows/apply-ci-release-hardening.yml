@@ -21,6 +21,23 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Normalize strict hardening script patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/apply-ci-release-hardening.py')
+          text = p.read_text(encoding='utf-8')
+          old = '''    "org.gradle.configuration-cache=true\\n",
+              "org.gradle.configuration-cache=true\\norg.gradle.caching=true\\n",'''
+          new = '''    "org.gradle.configuration-cache=true",
+              "org.gradle.configuration-cache=true\\norg.gradle.caching=true",'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one gradle pattern block, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply checked CI/release transformations
         shell: bash
         run: |
@@ -31,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rm .github/scripts/apply-ci-release-hardening.py
+          git rm -f .github/scripts/apply-ci-release-hardening.py
           git rm .github/workflows/apply-ci-release-hardening.yml
           git add -A
           git config user.name "github-actions[bot]"

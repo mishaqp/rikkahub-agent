@@ -43,10 +43,56 @@ jobs:
           CODE="$(bash .github/scripts/version-code.sh)"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_STEP_SUMMARY"
-      - name: Install Vulkan build dependencies
+      - name: Read release version
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
+          python3 - <<'PY'
+          import os, pathlib, re
+          source = pathlib.Path("app/build.gradle.kts").read_text()
+          match = re.search(r'versionName = "([^"]+)"', source)
+          if not match:
+              raise SystemExit("versionName not found in app/build.gradle.kts")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("RELEASE_TAG=v" + match.group(1) + "\n")
+          PY
+      - name: Refuse an existing release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "::error::Release tag ${RELEASE_TAG} already exists. Bump versionName before publishing."
+            exit 1
+          fi
+      - name: Verify versionCode is newer than latest published APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null); then
+            echo "No previous published release; skipping monotonic versionCode comparison."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/previous-release"
+          gh release download "$LATEST_TAG" --pattern '*.apk' --dir "$RUNNER_TEMP/previous-release"
+          shopt -s nullglob
+          APKS=("$RUNNER_TEMP/previous-release"/*.apk)
+          if [ ${#APKS[@]} -eq 0 ]; then
+            echo "::error::Latest release $LATEST_TAG has no APK asset; cannot verify versionCode monotonicity."
+            exit 1
+          fi
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
+          [ -n "$AAPT2" ] || { echo "::error::aapt2 not found"; exit 1; }
+          PREV_MAX=0
+          for PREV_APK in "${APKS[@]}"; do
+            PREV_CODE=$("$AAPT2" dump badging "$PREV_APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)
+            [ -n "$PREV_CODE" ] || { echo "::error::Could not read versionCode from $PREV_APK"; exit 1; }
+            if [ "$PREV_CODE" -gt "$PREV_MAX" ]; then PREV_MAX="$PREV_CODE"; fi
+          done
+          echo "versionCode: new=$VERSION_CODE latest_published=$PREV_MAX ($LATEST_TAG)"
+          if [ "$VERSION_CODE" -le "$PREV_MAX" ]; then
+            echo "::error::New versionCode $VERSION_CODE must be greater than latest published versionCode $PREV_MAX."
+            exit 1
+          fi
       - name: Configure release signing (requires secrets)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -69,15 +115,9 @@ jobs:
           echo "Release signing: using repository secrets" >> "$GITHUB_STEP_SUMMARY"
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Release lint (fixed memory)
-        timeout-minutes: 30
-        run: ./gradlew :app:lintRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=1 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
-      - name: Build arm64 release APK
-        timeout-minutes: 25
-        run: ./gradlew :app:assembleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
-      - name: Build arm64 release AAB
-        timeout-minutes: 25
-        run: ./gradlew :app:bundleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=2 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Lint and build arm64 release APK + AAB
+        timeout-minutes: 70
+        run: ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease -Parm64Only=true --no-daemon --no-parallel --max-workers=1 --console=plain --info --stacktrace -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
       - name: Web typecheck
         working-directory: web-ui
         run: pnpm typecheck
@@ -105,7 +145,7 @@ jobs:
           [ "$ACTUAL_CERT" = "$EXPECTED_CERT" ] || { echo "::error::unexpected signing certificate"; exit 1; }
 
           APK_PATH="$APK" python3 - <<'PY'
-          import os, re, sys, zipfile
+          import os, sys, zipfile
           z = zipfile.ZipFile(os.environ["APK_PATH"])
           bad = good = 0
           for name in z.namelist():
@@ -145,15 +185,6 @@ jobs:
             **/build/reports/tests/**
             app/build/reports/lint-results*
             BUILD_COMMIT.txt
-      - name: Read release version
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, re
-          source = pathlib.Path("app/build.gradle.kts").read_text()
-          version = re.search(r'versionName = "([^"]+)"', source).group(1)
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write("RELEASE_TAG=v" + version + "\n")
-          PY
       - name: Publish signed release
         uses: softprops/action-gh-release@v2
         with:
@@ -161,6 +192,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: rikkahub ${{ env.RELEASE_TAG }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab

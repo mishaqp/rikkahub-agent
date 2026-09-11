@@ -21,17 +21,17 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Validate and apply patch
+      - name: Apply checked source transformations
         shell: bash
         run: |
           set -euo pipefail
-          git apply --check .github/patches/extv-2.5.1-agent-selected.patch
-          git apply .github/patches/extv-2.5.1-agent-selected.patch
+          python3 .github/scripts/apply-extv-port.py
 
       - name: Commit selected fixes and remove one-shot files
         shell: bash
         run: |
           set -euo pipefail
+          git rm .github/scripts/apply-extv-port.py
           git rm .github/patches/extv-2.5.1-agent-selected.patch
           git rm .github/workflows/apply-extv-port.yml
           git add -A

@@ -92,7 +92,7 @@ object QueryFocusedExtractor {
         val blocks = splitBlocks(text)
         if (blocks.size < 2) return plain(text, cap)
 
-        val termFreqs = blocks.map { tokenFrequency(it) }
+        val termFreqs = blocks.map { tokenFrequency(it.text) }
         val lengths = termFreqs.map { freq -> freq.values.sum().toDouble() }
         val avgLen = lengths.average().takeIf { it > 0.0 } ?: 1.0
         val docFreq = HashMap<String, Int>()

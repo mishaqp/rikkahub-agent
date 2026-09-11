@@ -9,6 +9,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -172,5 +173,129 @@ class WebFetchToolTest {
 
         assertEquals(null, without["headers"])
         assertTrue(with["headers"]!!.jsonObject.containsKey("x-a"))
+    }
+
+    // ---- query-focused extraction (focus parameter) ------------------------------------
+
+    private fun envelopeJson(
+        html: String,
+        mode: FetchExtract = FetchExtract.ARTICLE,
+        maxChars: Int = 8_000,
+        startIndex: Int = 0,
+        focus: String? = null,
+    ): JsonObject = Json.parseToJsonElement(
+        buildExtractEnvelope(
+            status = 200,
+            ok = true,
+            finalUrl = "https://example.com/release",
+            html = html,
+            contentType = "text/html",
+            mode = mode,
+            maxChars = maxChars,
+            startIndex = startIndex,
+            bodyTruncated = false,
+            headers = null,
+            focus = focus,
+        ),
+    ).jsonObject
+
+    private fun focusedHtml(): String {
+        val menu = "Home About Products Pricing Careers Blog Support Sign in Register"
+        val body = listOf(
+            menu,
+            "The 2.5.1 release changes how the migration queue is applied: steps now run " +
+                "strictly in order, and older databases are upgraded without losing any user " +
+                "messages stored on the device. This paragraph repeats the words migration " +
+                "queue and 2.5.1 several times because they are the subject under discussion.",
+            "Subscribe to our newsletter this month and get a discount on your subscription " +
+                "plan, including extra storage and priority support from our team of experts.",
+            "Another 2.5.1 fix addresses attachments that failed to render in the chat list " +
+                "after the application was restarted from a cold start on some devices.",
+        )
+        return "<html><body><article>" +
+            body.joinToString("") { "<p>$it</p>" } +
+            "</article></body></html>"
+    }
+
+    @Test
+    fun `focus reduces text output to the relevant paragraphs`() {
+        val json = envelopeJson(focusedHtml(), focus = "how does the migration queue work in 2.5.1")
+
+        assertEquals(true, json["focus_applied"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("focused", json["content_mode"]!!.jsonPrimitive.content)
+        assertTrue(json["text"]!!.jsonPrimitive.content.contains("migration queue"))
+        assertFalse(json["text"]!!.jsonPrimitive.content.contains("Subscribe to our newsletter"))
+    }
+
+    @Test
+    fun `empty focus keeps the previous envelope unchanged`() {
+        val plain = envelopeJson(focusedHtml(), focus = null)
+        val blank = envelopeJson(focusedHtml(), focus = "   ")
+
+        assertEquals(false, plain["focus_applied"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("reader", plain["content_mode"]!!.jsonPrimitive.content)
+        assertEquals(false, blank["focus_applied"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(
+            plain["text"]!!.jsonPrimitive.content,
+            blank["text"]!!.jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `unmatched focus falls back to the reader text and says so`() {
+        val json = envelopeJson(focusedHtml(), focus = "квантовая запутанность в кулинарии")
+
+        assertEquals(false, json["focus_applied"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("reader", json["content_mode"]!!.jsonPrimitive.content)
+        assertTrue(json["text"]!!.jsonPrimitive.content.contains("migration queue"))
+    }
+
+    @Test
+    fun `raw links and metadata are never focus filtered`() {
+        val html = focusedHtml()
+
+        for (mode in listOf(FetchExtract.LINKS, FetchExtract.METADATA)) {
+            val json = envelopeJson(html, mode = mode, focus = "migration queue 2.5.1")
+            assertEquals(
+                "focus must not apply to ${mode.name.lowercase()}",
+                false,
+                json["focus_applied"]!!.jsonPrimitive.content.toBoolean(),
+            )
+        }
+        // RAW never reaches buildExtractEnvelope at all; its branch is asserted below.
+        assertTrue(html.contains("migration queue"))
+    }
+
+    @Test
+    fun `envelope carries the untrusted provenance fields and the fences`() {
+        val json = envelopeJson(focusedHtml(), focus = "migration queue")
+        val text = json["text"]!!.jsonPrimitive.content
+        val sourceId = json["source_id"]!!.jsonPrimitive.content
+
+        assertEquals(true, json["untrusted"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("example.com", json["host"]!!.jsonPrimitive.content)
+        assertTrue(json["retrieved_at"]!!.jsonPrimitive.content.isNotBlank())
+        assertTrue(sourceId.startsWith("web-"))
+
+        val wrapper = json["content"]!!.jsonPrimitive.content
+        assertTrue(wrapper.startsWith("<<<UNTRUSTED_WEB_CONTENT source_id=\"$sourceId\">>>"))
+        assertTrue(wrapper.endsWith("<<<END_UNTRUSTED_WEB_CONTENT>>>"))
+        assertTrue(wrapper.contains(text))
+    }
+
+    @Test
+    fun `start index pagination still holds without focus`() {
+        val html = "<html><body><article><p>${"Prose sentence here. ".repeat(30)}</p></article></body></html>"
+
+        val first = envelopeJson(html, maxChars = 50, startIndex = 0)
+        assertEquals(true, first["truncated"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(50, first["next_start_index"]!!.jsonPrimitive.content.toInt())
+
+        val next = envelopeJson(html, maxChars = 50, startIndex = 50)
+        val whole = envelopeJson(html, maxChars = 100_000, startIndex = 0)
+        assertEquals(
+            whole["text"]!!.jsonPrimitive.content.take(100),
+            first["text"]!!.jsonPrimitive.content + next["text"]!!.jsonPrimitive.content.take(50),
+        )
     }
 }

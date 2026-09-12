@@ -86,13 +86,43 @@ object WebExtractor {
 
         if (mode == ExtractMode.METADATA) return meta
 
-        if (mode == ExtractMode.LINKS) {
-            val links = doc.select("a[href]")
-                .map { ExtractedLink(href = it.absUrl("href"), text = it.text().trim()) }
-                .filter { it.href.isNotBlank() }
-            return meta.copy(links = links)
-        }
+        if (mode == ExtractMode.LINKS) return meta.copy(links = readLinks(doc))
 
+        return meta.copy(text = "").withWindow(cleanBodyText(doc, mode), maxChars, startIndex)
+    }
+
+    /**
+     * The complete cleaned ARTICLE/TEXT body with **no** [maxChars] window applied.
+     *
+     * Callers that rank passages themselves (see `QueryFocusedExtractor`) need the whole text,
+     * not the first window of it: a query whose answer sits past the first 32K characters can
+     * only be found if the ranking sees everything the bounded HTTP read produced. Callers that
+     * only want to read a page keep using [extract], whose windowing behaviour is unchanged.
+     */
+    fun extractFullText(
+        html: String,
+        baseUrl: String,
+        mode: ExtractMode,
+    ): ExtractedPage {
+        if (html.isBlank()) return ExtractedPage()
+
+        val doc = Jsoup.parse(html, baseUrl)
+        val meta = readMetadata(doc)
+
+        if (mode == ExtractMode.METADATA) return meta
+        if (mode == ExtractMode.LINKS) return meta.copy(links = readLinks(doc))
+
+        return meta.copy(text = cleanBodyText(doc, mode))
+    }
+
+    /** Anchors resolved against the document base URL. */
+    private fun readLinks(doc: Document): List<ExtractedLink> =
+        doc.select("a[href]")
+            .map { ExtractedLink(href = it.absUrl("href"), text = it.text().trim()) }
+            .filter { it.href.isNotBlank() }
+
+    /** Strip chrome and return the block-aware body text for [mode]. */
+    private fun cleanBodyText(doc: Document, mode: ExtractMode): String {
         doc.select(STRIP_TAGS.joinToString(",")).remove()
 
         val root = when (mode) {
@@ -100,8 +130,7 @@ object WebExtractor {
             else -> doc.body()
         }
 
-        val full = blockAwareText(root)
-        return meta.copy(text = "").withWindow(full, maxChars, startIndex)
+        return blockAwareText(root)
     }
 
     /** Slice [full] to a [maxChars] window at [startIndex], reporting resumability. */

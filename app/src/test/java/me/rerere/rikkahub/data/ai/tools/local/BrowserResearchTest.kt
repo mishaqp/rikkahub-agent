@@ -464,6 +464,81 @@ class BrowserResearchTest {
         assertEquals(once, twice)
     }
 
+    // ---- Regression: the semantic corpus is authoritative, not the longest string -------------
+
+    @Test
+    fun `a shorter research corpus is used for cache and focus instead of a longer page text`() {
+        // The legacy text is the long one, and it carries markers only a textContent-based
+        // extraction (Readability) ever sees. Picking the longer string is exactly how that hidden
+        // UI used to become the research corpus.
+        val hiddenUi = "CANVASLEAK CVHIDDENLEAK ARIALEAK INERTLEAK NAVLEAK OPTIONLEAK"
+        val legacy = "Visible introduction. ".repeat(120) + "\n\n" + hiddenUi
+        val semantic = "Safe introduction.\n\nSEMANTICSECTIONKEEP the archived finding."
+
+        val rendered = RenderedRead.Ok(page(text = legacy, researchText = semantic))
+        // The reader is a replay queue: two reads below need the snapshot twice.
+        val reader = readerOf(rendered, rendered)
+
+        val snapshot = invokeBrowser(reader, """{"max_chars":8000}""")
+        // The visible answer is untouched by this stage.
+        assertTrue(
+            snapshot["text"]!!.jsonPrimitive.content.startsWith("Visible introduction."),
+        )
+
+        val id = snapshot["source_id"]!!.jsonPrimitive.content
+        val cached = webSourceCache.get(id)!!
+        assertEquals(
+            "the cache must hold the semantic corpus, not the longer page text",
+            semantic,
+            cached.text,
+        )
+
+        val focused = invokeBrowser(reader, """{"focus":"SEMANTICSECTIONKEEP archived finding"}""")
+        assertTrue(focused["text"]!!.jsonPrimitive.content.contains("SEMANTICSECTIONKEEP"))
+        assertEquals(
+            "original_chars is the corpus length, so it proves which string was ranked",
+            semantic.length,
+            focused["original_chars"]!!.jsonPrimitive.content.toInt(),
+        )
+        assertTrue(
+            "ranking must see the short corpus, not the longer page text",
+            focused["original_chars"]!!.jsonPrimitive.content.toInt() < legacy.length,
+        )
+        for (leak in hiddenUi.split(" ")) {
+            assertFalse(
+                "$leak leaked into the focused answer",
+                focused["text"]!!.jsonPrimitive.content.contains(leak),
+            )
+            assertFalse("$leak leaked into the cache", cached.text.contains(leak))
+        }
+    }
+
+    @Test
+    fun `a page whose semantic pass produced nothing is never cached or ranked`() {
+        val legacyOnly = "Readability text carrying CVHIDDENLEAK content the engine never rendered."
+        val rendered = RenderedRead.Ok(page(text = legacyOnly).copy(researchUnavailable = true))
+        val reader = readerOf(rendered, rendered)
+
+        val snapshot = invokeBrowser(reader, """{"max_chars":8000}""")
+        // Legacy contract: the visible answer is still exactly the legacy text.
+        assertEquals(legacyOnly, snapshot["text"]!!.jsonPrimitive.content)
+        assertFalse(
+            "an untrusted corpus must not be published as a research source",
+            snapshot.containsKey("source_id"),
+        )
+        assertFalse(snapshot.containsKey("source_kind"))
+        assertEquals(0, webSourceCache.size())
+
+        val focused = invokeBrowser(reader, """{"focus":"CVHIDDENLEAK"}""")
+        assertEquals(
+            "focus must refuse rather than rank text nobody can vouch for",
+            "research_corpus_unavailable",
+            focused["error"]!!.jsonPrimitive.content,
+        )
+        assertNotNull("the refusal must explain itself", focused["recovery"])
+        assertEquals("nothing may be stored on the refusal path", 0, webSourceCache.size())
+    }
+
     // ---- 17, 18, 20: timeout, cancellation, cache policy -----------------------------------
 
     @Test

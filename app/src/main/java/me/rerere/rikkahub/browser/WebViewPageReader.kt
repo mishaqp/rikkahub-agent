@@ -117,18 +117,28 @@ internal object WebViewPageReader : RenderedPageReader {
     }
 
     /**
-     * Add a research-only corpus without changing the visible/Readability answer. If the semantic
-     * extraction fails or is shorter than the existing text, keeping the old corpus guarantees
-     * that this enrichment can never reduce what ranking and source reuse used to see.
+     * Attach the semantic corpus that ranking, caching and source reuse are allowed to use, without
+     * changing the visible/Readability answer.
+     *
+     * A successful, non-empty semantic read is authoritative no matter how short it is. Length is
+     * not a proxy for trust: the legacy text comes from Readability, which walks `textContent` and
+     * therefore sees content the engine never rendered (CSS-hidden UI, canvas fallbacks, inert or
+     * aria-hidden subtrees). Keeping whichever string happened to be longer is exactly how that
+     * hidden text used to become the research corpus.
+     *
+     * When the semantic read fails or comes back empty the legacy text is explicitly *not* promoted
+     * (see [RenderedPage.researchUnavailable]): the envelope then publishes no `source_id` and
+     * refuses `focus` instead of caching or ranking text this stage cannot vouch for.
      */
     private suspend fun attachResearchCorpus(webView: WebView, page: RenderedPage): RenderedPage {
         val research = readResearchCorpus(webView)
-        if (research.error != null || research.text.isBlank() || research.text.length < page.text.length) {
-            return page
+        if (research.error != null || research.text.isBlank()) {
+            return page.copy(researchUnavailable = true)
         }
         return page.copy(
             researchText = research.text,
             researchTruncated = research.truncated,
+            researchUnavailable = false,
         )
     }
 
@@ -214,9 +224,21 @@ internal object WebViewPageReader : RenderedPageReader {
                 var remaining = ($cap * 4) + 1;
                 var stopped = false;
 
+                // Element names are compared case-insensitively and namespace-aware. HTML reports an
+                // uppercase `tagName`, while SVG (and MathML) elements report a lowercase one, so a
+                // raw `tagName` lookup lets `<svg>` slip past a table keyed by "SVG" and its <text>
+                // children end up in the corpus. `localName` carries the authored name for foreign
+                // namespaces, which is why `localName || tagName`, upper-cased, is the only reliable
+                // way to compare a node against the tables below.
+                function normalizedTag(node) {
+                    if (!node) return '';
+                    var name = node.localName || node.tagName || node.nodeName || '';
+                    return String(name).toUpperCase();
+                }
+
                 function isHeading(node) {
                     if (!node || node.nodeType !== 1) return false;
-                    var tag = node.tagName || '';
+                    var tag = normalizedTag(node);
                     if (tag.length === 2 && tag.charAt(0) === 'H' &&
                         tag.charAt(1) >= '1' && tag.charAt(1) <= '6') return true;
                     if ((node.getAttribute('role') || '').trim().toLowerCase() === 'heading') return true;
@@ -228,7 +250,7 @@ internal object WebViewPageReader : RenderedPageReader {
                 function isCollapsedSemanticContainer(node, tag, role) {
                     if (tag === 'SECTION' || tag === 'DETAILS' || role === 'region') return true;
                     var parent = node.parentElement;
-                    return tag === 'DIV' && parent && parent.tagName === 'SECTION' &&
+                    return tag === 'DIV' && parent && normalizedTag(parent) === 'SECTION' &&
                         isHeading(node.previousElementSibling);
                 }
 
@@ -253,7 +275,7 @@ internal object WebViewPageReader : RenderedPageReader {
                     }
                     if (node.nodeType !== 1) return;
 
-                    var tag = node.tagName || '';
+                    var tag = normalizedTag(node);
                     if (forbiddenTags[tag]) return;
                     var ariaHidden = (node.getAttribute('aria-hidden') || '').trim().toLowerCase();
                     if (node.hidden || node.hasAttribute('inert') || ariaHidden === 'true') return;

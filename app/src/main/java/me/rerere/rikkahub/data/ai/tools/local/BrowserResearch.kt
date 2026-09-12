@@ -45,6 +45,9 @@ internal enum class RenderedScope { FULL_PAGE, SELECTOR }
  *
  * Both strings are bounded by [BROWSER_RESEARCH_MAX_CHARS] before they cross the JS bridge and are
  * not clipped to the caller's `max_chars`.
+ *
+ * [researchText] wins for ranking and reuse whenever it is present, whatever its length: it is the
+ * only string this stage can vouch for as page prose, so it never competes with [text] on size.
  */
 internal data class RenderedPage(
     val url: String?,
@@ -55,6 +58,16 @@ internal data class RenderedPage(
     val readTruncated: Boolean = false,
     val researchText: String? = null,
     val researchTruncated: Boolean = false,
+    /**
+     * True when a semantic pass ran on this page and produced nothing usable.
+     *
+     * The legacy [text] is then explicitly **not** a research source. Readability walks
+     * `textContent`, so on a page whose visible text is the shorter one it would hand ranking and
+     * the cache content the engine never rendered (CSS-hidden UI, canvas fallbacks, inert and
+     * aria-hidden subtrees). A reader that never ran a semantic pass leaves this false and [text]
+     * remains the corpus, which is the contract the host-side readers rely on.
+     */
+    val researchUnavailable: Boolean = false,
 )
 
 /** Outcome of reading the live page. */
@@ -214,7 +227,7 @@ internal fun collapseRenderedWhitespace(text: String): String =
 internal fun storeBrowserSource(
     page: RenderedPage,
     text: String,
-    readTruncated: Boolean,
+    corpusTruncated: Boolean,
     nowMillis: Long = System.currentTimeMillis(),
     store: (WebSource) -> Boolean = { webSourceCache.put(it) },
 ): String? {
@@ -230,7 +243,7 @@ internal fun storeBrowserSource(
         mode = if (page.extractMode == MODE_READABILITY) ExtractMode.ARTICLE else ExtractMode.TEXT,
         title = page.title,
         text = body,
-        bodyTruncated = readTruncated,
+        bodyTruncated = corpusTruncated,
         storedAtMillis = nowMillis,
         origin = WebSourceOrigin.BROWSER,
     )
@@ -246,6 +259,12 @@ internal fun storeBrowserSource(
  *    [QueryFocusedExtractor] and the answer carries the stage 1 diagnostics, so a rendered page
  *    and a fetched page are ranked by one implementation.
  *
+ * Ranking, caching and source reuse all consume the *semantic* corpus and nothing else. When the
+ * read reported one it is authoritative regardless of its length; only a read that never ran a
+ * semantic pass falls back to its own text, and a read whose semantic pass came back empty reports
+ * `research_corpus_unavailable` instead of having its legacy text promoted (see
+ * [RenderedPage.researchUnavailable]).
+ *
  * A selector-scoped read keeps the legacy shape untouched and is never cached.
  */
 internal fun browserTextEnvelope(
@@ -259,18 +278,28 @@ internal fun browserTextEnvelope(
 ): JsonObject {
     if (focus != null && requestedSelector != null) return focusSelectorConflictEnvelope()
 
-    val supplementalResearchText = page.researchText
-        ?.let(BrowserTextSanitizer::sanitize)
-        ?.takeIf { it.isNotBlank() }
-    val researchText = supplementalResearchText
-        ?: BrowserTextSanitizer.sanitize(page.text)
-    val sourceTruncated =
-        if (supplementalResearchText != null) page.researchTruncated else readTruncated
-    val sourceId = storeBrowserSource(page, researchText, sourceTruncated, nowMillis, store)
+    // The corpus this stage is willing to vouch for. A page the reader marked unavailable has none
+    // by construction - its legacy text may be longer, and that is exactly the case this refuses.
+    val semanticText =
+        if (!page.researchText.isNullOrBlank()) page.researchText else page.text
+    val corpusTruncated =
+        if (!page.researchText.isNullOrBlank()) page.researchTruncated else readTruncated
+    val researchCorpus = if (page.researchUnavailable) {
+        null
+    } else {
+        BrowserTextSanitizer.sanitize(semanticText).takeIf { it.isNotBlank() }
+    }
+
+    val sourceId = researchCorpus?.let {
+        storeBrowserSource(page, it, corpusTruncated, nowMillis, store)
+    }
 
     if (focus != null) {
+        // No corpus means no trustworthy ranking: the legacy text is never ranked here, so the
+        // caller is told instead of being handed passages this stage cannot vouch for.
+        val corpus = researchCorpus ?: return researchCorpusUnavailableEnvelope()
         val budget = minOf(maxChars, QueryFocusedExtractor.FOCUS_CHAR_BUDGET)
-        val focused = QueryFocusedExtractor.focus(researchText, focus, budget)
+        val focused = QueryFocusedExtractor.focus(corpus, focus, budget)
         return buildJsonObject {
             put("focused", true)
             put("focus", focus)
@@ -284,7 +313,7 @@ internal fun browserTextEnvelope(
             put("selection_truncated", focused.returnedChars < focused.originalChars)
             if (focused.fallbackUsed) put("focus_fallback", true)
             // A ranked selection is not a window: "truncated" reports the bounded source corpus.
-            put("truncated", sourceTruncated)
+            put("truncated", corpusTruncated)
             put("extract_mode", page.extractMode)
             sourceId?.let {
                 put("source_id", it)
@@ -322,6 +351,27 @@ internal fun focusSelectorConflictEnvelope(): JsonObject = buildJsonObject {
     put(
         "recovery",
         "Drop selector to rank the page, or drop focus and keep the selector for a targeted read.",
+    )
+}
+
+/**
+ * `focus` with no corpus it can trust.
+ *
+ * The semantic pass ran and produced nothing usable, so the only text available is the legacy
+ * answer - which may contain content the engine never rendered. Rather than ranking that, or
+ * writing it to the shared cache as a trusted `source_id`, the read is refused explicitly. The
+ * page is still readable without `focus`, and a scoped `selector` read still works.
+ */
+internal fun researchCorpusUnavailableEnvelope(): JsonObject = buildJsonObject {
+    put("error", "research_corpus_unavailable")
+    put(
+        "detail",
+        "The page did not yield a safe semantic research corpus, so focus cannot rank it.",
+    )
+    put(
+        "recovery",
+        "Read the page without focus, or scope the read with a selector, then retry focus on a " +
+            "page whose prose is in the DOM.",
     )
 }
 

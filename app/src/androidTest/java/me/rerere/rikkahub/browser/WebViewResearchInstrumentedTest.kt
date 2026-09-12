@@ -219,6 +219,153 @@ class WebViewResearchInstrumentedTest {
         assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
     }
 
+    // ---- Regression: F1 (namespaced SVG) and F2 (the corpus is not chosen by length) ----------
+
+    /**
+     * F1: an SVG element reports a lowercase `tagName`, so a forbidden-tag table keyed by uppercase
+     * names let `<svg>` and its `<text>` children into the research corpus.
+     */
+    @Test
+    fun namespacedSvgTextStaysOutOfFocusAndTheStoredSource() {
+        val net = CountingTransport()
+        val id = withBoundPage(namespacedSvgPageHtml()) {
+            val snapshot = readText(buildJsonObject { put("max_chars", JsonPrimitive(8000)) })
+            assertTrue(
+                "the ordinary prose must still be returned; envelope: $snapshot",
+                snapshot.str("text").orEmpty().contains(SVG_SAFE_MARKER),
+            )
+
+            val focused = readText(buildJsonObject { put("focus", JsonPrimitive(SVG_LEAK_MARKER)) })
+            assertEquals("true", focused.str("focused"))
+            assertFalse(
+                "an SVG-namespace element is not page prose; envelope: $focused",
+                focused.str("text").orEmpty().contains(SVG_LEAK_MARKER),
+            )
+            assertEquals(
+                "nothing in the corpus can match the SVG marker, so ranking must fall back",
+                "true",
+                focused.str("focus_fallback"),
+            )
+
+            snapshot.str("source_id")
+        }
+        assertNotNull("a whole-page read must publish a source_id", id)
+
+        // Read after the session is gone, so this is the stored corpus and nothing else.
+        val reused = invoke(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(net).build()),
+            buildJsonObject { put("source_id", JsonPrimitive(id!!)) },
+        )
+        assertEquals("true", reused.str("cached"))
+        assertTrue(
+            "safe prose must survive in the stored corpus; envelope: $reused",
+            reused.str("text").orEmpty().contains(SVG_SAFE_MARKER),
+        )
+        assertFalse(
+            "SVG text must never be stored as research prose; envelope: $reused",
+            reused.str("text").orEmpty().contains(SVG_LEAK_MARKER),
+        )
+        assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
+    }
+
+    /**
+     * F2: the Readability answer is the longer string here (it walks `textContent`), and it carries
+     * UI the engine never rendered. The shorter semantic corpus must be the one that is ranked and
+     * cached, while the CSS-collapsed semantic section stays reachable.
+     */
+    @Test
+    fun aShorterSemanticCorpusOutranksLongerReadabilityTextAndItsHiddenLeaks() {
+        val net = CountingTransport()
+        val leaks = listOf(
+            CANVAS_LEAK_MARKER,
+            CSS_HIDDEN_LEAK_MARKER,
+            ARIA_LEAK_MARKER,
+            INERT_LEAK_MARKER,
+            NAV_LEAK_MARKER,
+            OPTION_LEAK_MARKER,
+        )
+        var textContentChars = -1
+        var readabilityChars = -1
+
+        val id = withBoundPage(shorterSemanticCorpusPageHtml()) {
+            // Premise: on this page the legacy/Readability answer really is the longer string.
+            val legacy = readText(
+                buildJsonObject {
+                    put("extract_mode", JsonPrimitive("readability"))
+                    put("max_chars", JsonPrimitive(64 * 1024))
+                },
+            )
+            readabilityChars = legacy.str("text").orEmpty().length
+
+            val focused = readText(buildJsonObject { put("focus", JsonPrimitive(SEMANTIC_KEEP_MARKER)) })
+            assertEquals(
+                "the CSS-collapsed semantic section must still be reached; envelope: $focused",
+                "true",
+                focused.str("focused"),
+            )
+            assertNull(
+                "the marker must be selected, not handed back by fallback",
+                focused.str("focus_fallback"),
+            )
+            assertTrue(
+                "the archived section must be found; envelope: $focused",
+                focused.str("text").orEmpty().contains(SEMANTIC_KEEP_MARKER),
+            )
+            for (leak in leaks) {
+                assertFalse(
+                    "$leak must never be ranked from a rendered page; envelope: $focused",
+                    focused.str("text").orEmpty().contains(leak),
+                )
+            }
+
+            textContentChars = runBlocking {
+                BrowserController.activeWebView()?.evaluateJavascriptAsync(
+                    "(function(){return document.body ? document.body.textContent.length : 0;})()",
+                    4_000L,
+                )
+            }?.trim()?.toIntOrNull() ?: -1
+
+            // The corpus the engine used is provably the short, filtered one: it is shorter than
+            // both the page's textContent and the Readability answer.
+            val corpusChars = focused.int("original_chars")
+            assertTrue(
+                "premise: the semantic corpus must be shorter than the page text " +
+                    "(corpus=$corpusChars, textContent=$textContentChars)",
+                corpusChars < textContentChars,
+            )
+            assertTrue(
+                "premise: the Readability answer must be the longer string " +
+                    "(readability=$readabilityChars, corpus=$corpusChars)",
+                readabilityChars > corpusChars,
+            )
+
+            val snapshot = readText(buildJsonObject { put("max_chars", JsonPrimitive(8000)) })
+            snapshot.str("source_id")
+        }
+        assertNotNull("a whole-page read must publish a source_id", id)
+
+        val reused = invoke(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(net).build()),
+            buildJsonObject { put("source_id", JsonPrimitive(id!!)) },
+        )
+        assertTrue(
+            "the archived section must be in the stored corpus; envelope: $reused",
+            reused.str("text").orEmpty().contains(SEMANTIC_KEEP_MARKER),
+        )
+        for (leak in leaks) {
+            assertFalse(
+                "$leak must never reach the stored research corpus; envelope: $reused",
+                reused.str("text").orEmpty().contains(leak),
+            )
+        }
+        assertTrue(
+            "the stored corpus must be the short one, not the Readability answer " +
+                "(stored=${reused.str("text").orEmpty().length}, readability=$readabilityChars)",
+            reused.str("text").orEmpty().length < readabilityChars,
+        )
+        assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
+    }
+
     @Test
     fun autoFallsBackToTheVisibleBodyWhenThereIsNoArticle() {
         val env = withBoundPage(shortPageHtml()) { readText(buildJsonObject {}) }
@@ -589,6 +736,48 @@ class WebViewResearchInstrumentedTest {
         append("</article></main></body></html>")
     }
 
+    /**
+     * A page whose `<svg>` sits in the visible flow. SVG elements report a lowercase `tagName`, so a
+     * forbidden-tag table keyed by uppercase names only filtered them once the name was normalised.
+     * The hidden filler keeps the Readability answer longer than the semantic corpus, so a
+     * length-based pick would have had a longer string available to choose from.
+     */
+    private fun namespacedSvgPageHtml(): String = buildString {
+        append("<!doctype html><html><head><title>Namespaced svg probe</title></head><body><main><article>")
+        append("<h1>Namespaced svg probe</h1>")
+        repeat(6) { append("<p>$SVG_SAFE_MARKER. $PROSE</p>") }
+        append("<svg width='12' height='12'><text>$SVG_LEAK_MARKER</text></svg>")
+        append("<div style='content-visibility:hidden'>")
+        repeat(140) { append("<p>Hidden filler line that only a textContent walk would collect.</p>") }
+        append("</div>")
+        append("</article></main></body></html>")
+    }
+
+    /**
+     * Models the page behind F2: every forbidden subtree carries its own marker, the CSS-collapsed
+     * semantic section carries the one marker that must stay reachable, and the hidden filler makes
+     * the Readability answer far longer than the semantic corpus.
+     */
+    private fun shorterSemanticCorpusPageHtml(): String = buildString {
+        append("<!doctype html><html><head><title>Shorter semantic corpus</title>")
+        append("<style>.mw-section-body{display:none}</style></head><body><main><article>")
+        append("<h1>Shorter semantic corpus</h1>")
+        repeat(4) { append("<p>$PROSE</p>") }
+        append("<div style='content-visibility:hidden'><p>$CSS_HIDDEN_LEAK_MARKER</p>")
+        repeat(220) { append("<p>Hidden filler line that only a textContent walk would collect.</p>") }
+        append("</div>")
+        append("<canvas id='svg-probe-canvas'>$CANVAS_LEAK_MARKER</canvas>")
+        append("<div aria-hidden='true'>$ARIA_LEAK_MARKER</div>")
+        append("<div inert>$INERT_LEAK_MARKER</div>")
+        append("<div role='navigation'>$NAV_LEAK_MARKER</div>")
+        append("<select><option>$OPTION_LEAK_MARKER</option></select>")
+        append("<section><div class='mw-heading'><h2>Archived research section</h2></div>")
+        append("<div class='mw-section-body'>")
+        append("<p>$SEMANTIC_KEEP_MARKER the archived finding is recorded here.</p>")
+        append("</div></section>")
+        append("</article></main></body></html>")
+    }
+
     private fun shortPageHtml(): String =
         "<!doctype html><html><head><title>Short page</title></head><body>" +
             "<div id='only'>$SHORT_PAGE_MARKER and very little else.</div></body></html>"
@@ -631,6 +820,19 @@ class WebViewResearchInstrumentedTest {
         const val CSS_HIDDEN_UI_SENTINEL = "CSSHIDDENUILEAK8246"
         const val HIDDEN_SENTINEL = "HIDDENLEAK5183"
         const val PASSWORD_SENTINEL = "PASSWORDLEAK7734"
+
+        /** F1: text inside an SVG-namespace subtree, plus the prose that must survive beside it. */
+        const val SVG_LEAK_MARKER = "SVGFINDER77"
+        const val SVG_SAFE_MARKER = "SVGSAFEPROSE8"
+
+        /** F2: the marker inside the CSS-collapsed semantic section and the forbidden companions. */
+        const val SEMANTIC_KEEP_MARKER = "SEMANTICSECTIONKEEP"
+        const val CANVAS_LEAK_MARKER = "CANVASLEAK"
+        const val CSS_HIDDEN_LEAK_MARKER = "CVHIDDENLEAK"
+        const val ARIA_LEAK_MARKER = "ARIALEAK"
+        const val INERT_LEAK_MARKER = "INERTLEAK"
+        const val NAV_LEAK_MARKER = "NAVLEAK"
+        const val OPTION_LEAK_MARKER = "OPTIONLEAK"
 
         const val NETWORK_ONLY_BODY = "<html><body><article><p>NETWORKONLY-5</p></article></body></html>"
 

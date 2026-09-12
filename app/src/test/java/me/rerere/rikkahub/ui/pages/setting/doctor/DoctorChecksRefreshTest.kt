@@ -17,7 +17,8 @@ import kotlin.uuid.Uuid
  * Coverage for the pure decision functions backing the doctor-refresh rows (Shizuku, gallery
  * orphans, workspace, sub-agent profiles, MCP servers, skills, Telegram proxy, context
  * compaction). [DoctorChecks] itself needs a real Android Context to construct, so, same as
- * these pin the extracted pure functions directly.
+ * [DoctorChecksLlamaCppTest] and [DoctorChecksBrowserTest], these pin the extracted pure
+ * functions directly.
  */
 class DoctorChecksRefreshTest {
 

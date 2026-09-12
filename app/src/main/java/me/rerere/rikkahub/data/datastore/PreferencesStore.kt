@@ -154,6 +154,17 @@ internal fun reconcileBuiltInProviders(
                     val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
                     providers.add(insertAt, defaultProvider.copyProvider())
                 }
+                is ProviderSetting.LlamaCppLocal -> {
+                    // Keep all on-device runtimes grouped at the top. If LiteRT is absent,
+                    // insert after AICore (or at 0 when neither earlier runtime exists).
+                    val liteRtIndex = providers.indexOfFirst { it is ProviderSetting.LiteRtLocal }
+                    val insertAt = if (liteRtIndex >= 0) {
+                        liteRtIndex + 1
+                    } else {
+                        providers.indexOfFirst { it is ProviderSetting.AICore } + 1
+                    }
+                    providers.add(insertAt, defaultProvider.copyProvider())
+                }
                 else -> providers.add(defaultProvider.copyProvider())
             }
         }
@@ -653,6 +664,10 @@ class SettingsStore(
                         )
 
                         is ProviderSetting.LiteRtLocal -> provider.copy(
+                            models = provider.models.distinctBy { model -> model.id }
+                        )
+
+                        is ProviderSetting.LlamaCppLocal -> provider.copy(
                             models = provider.models.distinctBy { model -> model.id }
                         )
 

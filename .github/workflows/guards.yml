@@ -2,7 +2,7 @@ name: Guards
 # Repository-level regression guards for the 2.5.1 port. Fast, no build: they fail the job when a
 # shipped source starts pointing at the parent repository, when the update feed loses this fork's
 # URL, when the Room chain loses a step, when upstream stops being an ancestor of HEAD, or when
-# llama.cpp/GGUF artefacts reappear in shipped code.
+# the two local runtimes drift, or the pinned llama.cpp source revision changes unexpectedly.
 on:
   push:
     branches: [master]
@@ -71,16 +71,27 @@ jobs:
           code="$(bash .github/scripts/version-code.sh)" || note "version-code.sh failed"
           echo "computed VERSION_CODE: $code"
 
-          echo "=== 6. no llama.cpp / GGUF in shipped code, single submodule ==="
-          llama=$(grep -rniE "gguf|llama[-_ ]?cpp|libllama|llama\.h" \
-            --include="*.kt" --include="*.kts" --include="*.java" \
-            --include="*.c" --include="*.cc" --include="*.cpp" --include="*.h" --include="*.hpp" \
-            --include="*.cmake" --include="CMakeLists.txt" --include="*.toml" --include="*.pro" \
-            app/src/main ai/src/main local-llm/src/main workspace/src/main 2>/dev/null \
-            | grep -vi "ollama" | cut -c1-200 | head -20 || true)
-          if [ -n "$llama" ]; then note "llama.cpp/GGUF references found"; echo "$llama"; fi
+          echo "=== 6. LiteRT and pinned CPU-only llama.cpp both stay wired ==="
+          grep -Fq 'include(":local-llm")' settings.gradle.kts || note "local-llm module is missing"
+          grep -Fq 'include(":llama-cpp")' settings.gradle.kts || note "llama-cpp module is missing"
+          grep -Fq 'implementation(project(":llama-cpp"))' app/build.gradle.kts || note "app does not depend on llama-cpp"
+          grep -Fq 'url = https://github.com/ggml-org/llama.cpp' .gitmodules || note "official llama.cpp submodule URL is missing"
+          grep -Fq '@SerialName("local_llamacpp")' ai/src/main/java/me/rerere/ai/provider/ProviderSetting.kt \
+            || note "llama.cpp provider setting is missing"
+          grep -Fq '"local_llamacpp"' app/src/main/java/me/rerere/rikkahub/di/DataSourceModule.kt \
+            || note "llama.cpp provider registration is missing"
+          grep -Fq 'params.n_gpu_layers = 0' llama-cpp/src/main/cpp/llama_jni.cpp \
+            || note "stable CPU-only llama.cpp configuration changed"
+          grep -Fq '"-DLLAMAJNI_ENABLE_OPENCL=OFF"' llama-cpp/build.gradle.kts \
+            || note "stable OpenCL-off llama.cpp configuration changed"
+
+          expected_llama=596a5795bdd6da317ea103fc06c0a71c296e3669
+          actual_llama=$(git ls-tree HEAD llama-cpp/native/llama.cpp | awk '{print $3}')
+          echo "llama.cpp gitlink: $actual_llama"
+          [ "$actual_llama" = "$expected_llama" ] \
+            || note "llama.cpp gitlink is $actual_llama, expected $expected_llama"
           subs=$(grep -c '^\[submodule' .gitmodules || true)
-          [ "$subs" = "1" ] || note "expected exactly one submodule, found $subs"
+          [ "$subs" = "2" ] || note "expected exactly two submodules, found $subs"
 
           if [ "$fail" -ne 0 ]; then echo "guards failed"; exit 1; fi
           echo "all guards passed"

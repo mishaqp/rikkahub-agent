@@ -60,6 +60,19 @@ val DEFAULT_PROVIDERS = listOf(
             Text("On-device — LiteRT-LM")
         },
     ),
+    ProviderSetting.LlamaCppLocal(
+        // llama.cpp on-device provider. Disabled by default, matching LiteRT above. It uses
+        // the same reorderable provider surface and ships a curated GGUF catalog, HuggingFace
+        // search, resumable downloads and a SAF file picker for models already on the device.
+        enabled = false,
+        builtIn = true,
+        description = {
+            Text("Runs GGUF models on-device via llama.cpp. No API key, no network at inference.")
+        },
+        shortDescription = {
+            Text("On-device — llama.cpp / GGUF")
+        },
+    ),
     // All built-in providers ship DISABLED by default. New installs start with zero
     // network-egress paths so a freshly-installed app can never make an LLM call (or
     // bill any account) until the user explicitly enables a provider AND adds an API

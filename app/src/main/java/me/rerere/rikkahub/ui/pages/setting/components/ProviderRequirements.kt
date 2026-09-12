@@ -37,7 +37,14 @@ data class ProviderRequirement(
                     label = "On-device · ~1.5 GB",
                     severity = TagType.INFO,
                 ),
-            )            else -> emptyList()
+            )
+            is ProviderSetting.LlamaCppLocal -> listOf(
+                ProviderRequirement(
+                    label = "On-device · CPU only",
+                    severity = TagType.INFO,
+                ),
+            )
+            else -> emptyList()
         }
     }
 }

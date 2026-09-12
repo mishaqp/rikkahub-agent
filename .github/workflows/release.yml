@@ -126,7 +126,9 @@ jobs:
         run: |
           set -euo pipefail
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -1)
           echo "APK: $APK"
+          echo "AAB: $AAB"
           AAPT2=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
 
@@ -144,9 +146,33 @@ jobs:
           ACTUAL_CERT=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 "certificate SHA-256 digest" | awk '{print $NF}')
           [ "$ACTUAL_CERT" = "$EXPECTED_CERT" ] || { echo "::error::unexpected signing certificate"; exit 1; }
 
-          APK_PATH="$APK" python3 - <<'PY'
+          APK_PATH="$APK" AAB_PATH="$AAB" python3 - <<'PY'
           import os, sys, zipfile
           z = zipfile.ZipFile(os.environ["APK_PATH"])
+          native = sorted(name for name in z.namelist() if name.startswith("lib/") and name.endswith(".so"))
+          required_jni = "lib/arm64-v8a/libllamajni.so"
+          print("APK native libraries:", *native, sep="\n  ")
+          if required_jni not in native:
+              sys.exit(f"FAIL: {required_jni} is missing from the APK")
+          wrong_abi = [name for name in native if not name.startswith("lib/arm64-v8a/")]
+          if wrong_abi:
+              sys.exit(f"FAIL: non-arm64 libraries in arm64 APK: {wrong_abi}")
+
+          aab = zipfile.ZipFile(os.environ["AAB_PATH"])
+          aab_native = sorted(
+              name for name in aab.namelist()
+              if name.startswith("base/lib/") and name.endswith(".so")
+          )
+          required_aab_jni = "base/lib/arm64-v8a/libllamajni.so"
+          print("AAB native libraries:", *aab_native, sep="\n  ")
+          if required_aab_jni not in aab_native:
+              sys.exit(f"FAIL: {required_aab_jni} is missing from the AAB")
+          wrong_aab_abi = [
+              name for name in aab_native if not name.startswith("base/lib/arm64-v8a/")
+          ]
+          if wrong_aab_abi:
+              sys.exit(f"FAIL: non-arm64 libraries in arm64 AAB: {wrong_aab_abi}")
+
           bad = good = 0
           for name in z.namelist():
               if not name.endswith(".dex"):

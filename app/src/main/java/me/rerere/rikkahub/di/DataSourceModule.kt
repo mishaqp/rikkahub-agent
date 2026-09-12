@@ -336,6 +336,14 @@ val dataSourceModule = module {
                 ),
             )
             pm.registerProvider(
+                "local_llamacpp",
+                me.rerere.llamacpp.LlamaCppProvider(
+                    context = get(),
+                    runtime = get(),
+                    prefs = get(),
+                ),
+            )
+            pm.registerProvider(
                 "codex",
                 CodexProvider(
                     client = get(named("codex")),

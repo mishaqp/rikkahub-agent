@@ -72,6 +72,11 @@ internal fun parseFocus(obj: kotlinx.serialization.json.JsonObject): String? =
  * [QueryFocusedExtractor.focus] is handed `min(maxChars, FOCUS_CHAR_BUDGET)` so a caller that
  * asked for fewer characters never gets more, and the default focused answer stays close to
  * 12 KiB instead of the 32 KiB the unfocused path may return.
+ *
+ * A focused answer is a selection, not a window: `truncated` mirrors the body-level limit only,
+ * `selection_truncated` reports that ranking returned less than the page held, and
+ * `next_start_index` is never emitted here. Callers page through text with `start_index` only
+ * when focus is absent.
  */
 private fun buildFocusedEnvelope(
     status: Int,
@@ -127,10 +132,14 @@ private fun buildFocusedEnvelope(
         put("original_chars", focused.originalChars)
         put("returned_chars", focused.returnedChars)
         if (focused.fallbackUsed) put("focus_fallback", true)
-        // A focused answer is a selection, not a window: it is "truncated" whenever the page
-        // held more text than was returned, but next_start_index is deliberately absent so the
-        // caller cannot mistake this for character pagination.
-        put("truncated", bodyTruncated || focused.returnedChars < focused.originalChars)
+        // A ranked selection is not a character window, and the two reasons there may be "more
+        // text" are reported separately so one can never be mistaken for the other: "truncated"
+        // keeps its original meaning (the fetch/body itself was cut short), while
+        // "selection_truncated" says ranking deliberately returned only part of the extracted
+        // text. next_start_index is deliberately absent: ranked passages are not resumed through
+        // start_index, and sending both is rejected as focus_start_index_conflict.
+        put("truncated", bodyTruncated)
+        put("selection_truncated", focused.returnedChars < focused.originalChars)
         put("body_truncated", bodyTruncated)
         headers?.let { h -> put("headers", buildJsonObject { h.forEach { (k, v) -> put(k, v) } }) }
     }.toString()
@@ -277,9 +286,13 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         pass next_start_index back as start_index to continue. method is GET (default) or
         POST. Response headers are omitted unless include_headers=true. Private, loopback and
         link-local addresses are refused. focus is an optional query that returns only the most
-        relevant article/text passages (article/text modes) instead of the whole page. Returns
-        {status, ok, final_url, extract_mode, title, text, truncated, next_start_index} or
-        {error, detail, recovery}.
+        relevant article/text passages (article/text modes) instead of the whole page. Without
+        focus, truncated=true together with next_start_index means ordinary character pagination
+        and you continue by passing start_index back; a focused result is never continued that
+        way - its ranked passages are not resumable, so read chunks_total, chunks_selected,
+        original_chars, returned_chars and selection_truncated instead, and combining focus with
+        start_index is rejected. Returns {status, ok, final_url, extract_mode, title, text,
+        truncated, next_start_index} or {error, detail, recovery}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

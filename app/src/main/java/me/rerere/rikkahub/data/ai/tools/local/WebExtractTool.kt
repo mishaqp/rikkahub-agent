@@ -31,9 +31,12 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
         next_start_index back as start_index to continue reading. Use this instead of
         web_fetch when you want to read a page rather than inspect its markup. focus is an
         optional query that returns only the most relevant article/text passages (article/text
-        modes) instead of the whole page. Pages that build their content with JavaScript may
-        return empty_extraction, use the browser tools for those. Returns {status, final_url,
-        title, text, truncated, next_start_index} or {error, detail, recovery}.
+        modes) instead of the whole page; without focus, truncated=true plus next_start_index
+        means ordinary pagination you continue with start_index, while a focused result is not
+        resumable - read chunks_selected and selection_truncated instead, and never combine
+        focus with start_index. Pages that build their content with JavaScript may return
+        empty_extraction, use the browser tools for those. Returns {status, final_url, title,
+        text, truncated, next_start_index} or {error, detail, recovery}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(

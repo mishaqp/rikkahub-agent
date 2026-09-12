@@ -191,6 +191,7 @@ class WebFetchToolTest {
         maxChars: Int = 32 * 1024,
         startIndex: Int = 0,
         mode: FetchExtract = FetchExtract.ARTICLE,
+        bodyTruncated: Boolean = false,
     ): JsonObject = Json.parseToJsonElement(
         buildExtractEnvelope(
             status = 200,
@@ -201,7 +202,7 @@ class WebFetchToolTest {
             mode = mode,
             maxChars = maxChars,
             startIndex = startIndex,
-            bodyTruncated = false,
+            bodyTruncated = bodyTruncated,
             headers = null,
             focus = focus,
         ),
@@ -321,6 +322,63 @@ class WebFetchToolTest {
             "blocked_address",
             invoke("""{"url":"http://127.0.0.1:9","extract_mode":"article","focus":"x"}""").error(),
         )
+    }
+
+    @Test
+    fun `focused selection truncation is separate from body truncation`() {
+        val json = focusEnvelope(focus = "офлайн режима работы")
+
+        // The page held more text than ranking returned, but the fetch itself was complete.
+        assertEquals("true", json["selection_truncated"]!!.jsonPrimitive.content)
+        assertEquals("false", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("false", json["body_truncated"]!!.jsonPrimitive.content)
+        assertNull(json["next_start_index"])
+        assertTrue(
+            json["returned_chars"]!!.jsonPrimitive.content.toInt() <
+                json["original_chars"]!!.jsonPrimitive.content.toInt(),
+        )
+    }
+
+    @Test
+    fun `focused response with a truncated body flags truncated and offers no resume index`() {
+        val json = focusEnvelope(focus = "офлайн режима работы", bodyTruncated = true)
+
+        assertEquals("true", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("true", json["body_truncated"]!!.jsonPrimitive.content)
+        assertNull(json["next_start_index"])
+        assertEquals("true", json["selection_truncated"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `unfocused response keeps pagination semantics and gains no selection fields`() {
+        val json = Json.parseToJsonElement(
+            buildExtractEnvelope(
+                status = 200,
+                ok = true,
+                finalUrl = "https://example.com/a",
+                html = focusHtml,
+                contentType = "text/html",
+                mode = FetchExtract.ARTICLE,
+                maxChars = 300,
+                startIndex = 0,
+                bodyTruncated = false,
+                headers = null,
+            ),
+        ).jsonObject
+
+        assertEquals("true", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("300", json["next_start_index"]!!.jsonPrimitive.content)
+        assertFalse(json.containsKey("selection_truncated"))
+        assertFalse(json.containsKey("focused"))
+    }
+
+    @Test
+    fun `focus with a start index is still rejected as a conflict`() {
+        val json = focusEnvelope(focus = "офлайн", startIndex = 40)
+
+        assertEquals("focus_start_index_conflict", json["error"]!!.jsonPrimitive.content)
+        assertFalse(json.containsKey("selection_truncated"))
+        assertFalse(json.containsKey("truncated"))
     }
 
     @Test

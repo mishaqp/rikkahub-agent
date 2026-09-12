@@ -2130,4 +2130,8 @@
   <string name="chat_page_queue_edit_title">تحرير الرسالة في قائمة الانتظار</string>
   <string name="chat_page_queue_paused_count">قائمة الانتظار متوقفة مؤقتًا · %1$d</string>
   <string name="chat_page_queue_pending_count">في قائمة الانتظار · %1$d</string>
+  <string name="clodex_provider_description">مفتاح API واحد لنماذج GPT وClaude وGemini وGrok وغيرها. يستخدم واجهة Responses API المتوافقة مع OpenAI من CLODEX؛ أضف مفتاحك، ثم اختر النماذج من علامة تبويب النماذج.</string>
+  <string name="clodex_provider_short_description">متوافق مع OpenAI · Responses API</string>
+  <string name="clodex_provider_dashboard">لوحة التحكم</string>
+  <string name="clodex_provider_docs">وثائق API</string>
 </resources>

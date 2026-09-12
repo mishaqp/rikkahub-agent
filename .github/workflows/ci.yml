@@ -51,12 +51,13 @@ jobs:
           CODE="$(bash .github/scripts/version-code.sh)"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_STEP_SUMMARY"
-      - name: Run AI, search, LiteRT, workspace and app unit tests
+      - name: Run AI, search, LiteRT, llama.cpp, workspace and app unit tests
         run: >-
           ./gradlew
           :ai:testDebugUnitTest
           :search:testDebugUnitTest
           :local-llm:testDebugUnitTest
+          :llama-cpp:testDebugUnitTest
           :workspace:testDebugUnitTest
           :app:testDebugUnitTest
           --no-daemon
@@ -130,12 +131,14 @@ jobs:
           -Parm64Only=true
           --no-daemon --no-parallel --max-workers=1 --console=plain
           -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8"
-      - name: Verify APK (identity, signature and update URL)
+      - name: Verify APK + AAB (identity, native payload, signature and update URL)
         shell: bash
         run: |
           set -euo pipefail
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -1)
           echo "APK: $APK"
+          echo "AAB: $AAB"
           AAPT2=$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
 
@@ -158,9 +161,37 @@ jobs:
           echo "cert sha256: $ACTUAL_CERT"
           [ "$ACTUAL_CERT" = "$EXPECTED_CERT" ] || { echo "::error::unexpected signing certificate"; exit 1; }
 
-          APK_PATH="$APK" python3 - <<'PY'
+          APK_PATH="$APK" AAB_PATH="$AAB" python3 - <<'PY'
           import os, re, sys, zipfile
           z = zipfile.ZipFile(os.environ["APK_PATH"])
+          native = sorted(name for name in z.namelist() if name.startswith("lib/") and name.endswith(".so"))
+          print("APK native libraries:")
+          for name in native:
+              print("  ", name)
+          required_jni = "lib/arm64-v8a/libllamajni.so"
+          if required_jni not in native:
+              sys.exit(f"FAIL: {required_jni} is missing from the APK")
+          wrong_abi = [name for name in native if not name.startswith("lib/arm64-v8a/")]
+          if wrong_abi:
+              sys.exit(f"FAIL: non-arm64 libraries in arm64 APK: {wrong_abi}")
+
+          aab = zipfile.ZipFile(os.environ["AAB_PATH"])
+          aab_native = sorted(
+              name for name in aab.namelist()
+              if name.startswith("base/lib/") and name.endswith(".so")
+          )
+          print("AAB native libraries:")
+          for name in aab_native:
+              print("  ", name)
+          required_aab_jni = "base/lib/arm64-v8a/libllamajni.so"
+          if required_aab_jni not in aab_native:
+              sys.exit(f"FAIL: {required_aab_jni} is missing from the AAB")
+          wrong_aab_abi = [
+              name for name in aab_native if not name.startswith("base/lib/arm64-v8a/")
+          ]
+          if wrong_aab_abi:
+              sys.exit(f"FAIL: non-arm64 libraries in arm64 AAB: {wrong_aab_abi}")
+
           bad = good = 0
           urls = set()
           for name in z.namelist():
@@ -194,6 +225,53 @@ jobs:
           name: rikkahub-release-aab
           path: app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
+
+  # Compiles and loads the real JNI library on Android without downloading a multi-GB model.
+  # Model-independent JVM tests cover context planning, templates, streaming, cancellation and
+  # memory refusal; this job proves the NDK/CMake artifact itself links and executes on-device.
+  llama-native-tests:
+    name: llama.cpp JNI smoke test (emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Load the real llama.cpp JNI library
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: >-
+            ./gradlew :llama-cpp:connectedDebugAndroidTest
+            -Pandroid.testInstrumentationRunnerArguments.class=me.rerere.llamacpp.LlamaCppNativeSmokeTest
+            --no-daemon --max-workers=2
+            -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+      - name: Upload llama.cpp instrumentation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-native-results
+          path: llama-cpp/build/reports/androidTests/**
+          if-no-files-found: ignore
 
   room-migration-tests:
     name: Room migration tests (emulator)

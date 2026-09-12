@@ -133,6 +133,14 @@ object WebExtractor {
         return blockAwareText(root)
     }
 
+    /**
+     * Character window over text that has already been extracted, using exactly the slicing
+     * and resumability rules of [extract]. A cached page is re-read through this, so a
+     * `source_id` call paginates identically to the fetch that produced it.
+     */
+    fun sliceWindow(text: String, maxChars: Int, startIndex: Int): ExtractedPage =
+        ExtractedPage().withWindow(text, maxChars, startIndex)
+
     /** Slice [full] to a [maxChars] window at [startIndex], reporting resumability. */
     private fun ExtractedPage.withWindow(
         full: String,

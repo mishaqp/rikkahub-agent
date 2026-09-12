@@ -157,6 +157,29 @@ class WebExtractorTest {
     }
 
     @Test
+    fun `sliceWindow paginates already-extracted text like extract does`() {
+        val whole = WebExtractor.extract(articleHtml, "https://example.com/p", ExtractMode.ARTICLE, 10_000, 0)
+
+        val first = WebExtractor.sliceWindow(whole.text, 40, 0)
+        assertTrue(first.truncated)
+        assertEquals(40, first.nextStartIndex)
+
+        val second = WebExtractor.sliceWindow(whole.text, 40, 40)
+        assertEquals(whole.text.substring(0, 80), first.text + second.text)
+
+        val rest = WebExtractor.sliceWindow(whole.text, 10_000, 0)
+        assertFalse(rest.truncated)
+        assertNull(rest.nextStartIndex)
+    }
+
+    @Test
+    fun `sliceWindow past the end yields empty text`() {
+        val page = WebExtractor.sliceWindow("short text", 100, 9_999)
+        assertEquals("", page.text)
+        assertFalse(page.truncated)
+    }
+
+    @Test
     fun `extractFullText on blank html is empty`() {
         val page = WebExtractor.extractFullText("", "https://example.com/p", ExtractMode.ARTICLE)
         assertEquals("", page.text)

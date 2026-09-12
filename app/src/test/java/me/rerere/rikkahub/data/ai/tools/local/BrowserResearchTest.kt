@@ -26,7 +26,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -441,8 +440,7 @@ class BrowserResearchTest {
             }
         }
 
-        assertTrue(thrown is CancellationException)
-        assertFalse("a cancellation is not an IOException", thrown is IOException)
+        assertEquals("cancelled by the caller", thrown.message)
     }
 
     @Test

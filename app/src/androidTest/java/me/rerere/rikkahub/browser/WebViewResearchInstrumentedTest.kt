@@ -198,6 +198,7 @@ class WebViewResearchInstrumentedTest {
             SCRIPT_SENTINEL,
             STYLE_SENTINEL,
             DISPLAY_NONE_SENTINEL,
+            CSS_HIDDEN_UI_SENTINEL,
             HIDDEN_SENTINEL,
             PASSWORD_SENTINEL,
         )) {
@@ -565,22 +566,24 @@ class WebViewResearchInstrumentedTest {
      */
     private fun collapsedArticlePageHtml(): String = buildString {
         append("<!doctype html><html><head><title>Collapsed semantic article</title>")
-        append("<style>.collapsed-section{display:none}.marker{content:'$STYLE_SENTINEL'}</style>")
+        append("<style>.mw-section-body{display:none}.css-hidden-ui{display:none}</style>")
         append("<script>window.__collapsedLeak='$SCRIPT_SENTINEL';</script>")
         append("</head><body><main><article><h1>Collapsed semantic article</h1>")
         repeat(8) {
             append("<p>$COLLAPSED_VISIBLE_MARKER. $PROSE</p>")
         }
-        append("<section class='collapsed-section'><h2>Archived research section</h2>")
+        append("<section><div class='mw-heading'><h2>Archived research section</h2></div>")
+        append("<div class='mw-section-body'>")
         val filler =
             "<p>The archived catalogue records an orbital observation, calibration sequence, " +
                 "reference ledger, and seasonal measurement for later scientific review.</p>"
         repeat(260) { append(filler) }
         append("<p>The final archived finding is $COLLAPSED_DEEP_MARKER.</p>")
-        append("</section>")
+        append("</div></section>")
         append("<script>window.__insideLeak='$SCRIPT_SENTINEL';</script>")
         append("<style>.inside-marker{content:'$STYLE_SENTINEL'}</style>")
         append("<div style='display:none'>$DISPLAY_NONE_SENTINEL</div>")
+        append("<div class='css-hidden-ui'>$CSS_HIDDEN_UI_SENTINEL</div>")
         append("<div hidden>$HIDDEN_SENTINEL</div>")
         append("<form><input type='password' value='$PASSWORD_SENTINEL'></form>")
         append("</article></main></body></html>")
@@ -625,6 +628,7 @@ class WebViewResearchInstrumentedTest {
         const val SCRIPT_SENTINEL = "SCRIPTLEAK4217"
         const val STYLE_SENTINEL = "STYLELEAK9321"
         const val DISPLAY_NONE_SENTINEL = "DISPLAYNONELEAK6180"
+        const val CSS_HIDDEN_UI_SENTINEL = "CSSHIDDENUILEAK8246"
         const val HIDDEN_SENTINEL = "HIDDENLEAK5183"
         const val PASSWORD_SENTINEL = "PASSWORDLEAK7734"
 

@@ -177,10 +177,11 @@ internal object WebViewPageReader : RenderedPageReader {
     /**
      * Build a research corpus from semantic page content already present in the DOM.
      *
-     * Unlike `innerText`, this traversal includes sections collapsed only by a stylesheet (the
-     * mobile Wikipedia/Minerva case). It does not inspect computed styles or attributes beyond
-     * visibility markers, and it never serialises DOM or form values. Executable, embedded,
-     * navigation, form and explicitly hidden subtrees are skipped before text crosses the bridge.
+     * Unlike `innerText`, this read-only traversal includes semantic sections collapsed only by a
+     * stylesheet (the mobile Wikipedia/Minerva case). Computed style still rejects arbitrary hidden
+     * UI: the exception is limited to section containers and a heading's content container inside a
+     * section. It never serialises DOM or form values, and executable, embedded, navigation, form
+     * and explicitly hidden subtrees are skipped before text crosses the bridge.
      */
     private suspend fun readResearchCorpus(webView: WebView): ElementRead {
         val cap = BROWSER_RESEARCH_MAX_CHARS
@@ -193,7 +194,6 @@ internal object WebViewPageReader : RenderedPageReader {
                     document.documentElement;
                 if (!root) return JSON.stringify({error:'research_root_not_found'});
 
-                var clone = root.cloneNode(true);
                 var forbiddenTags = {
                     SCRIPT:1, STYLE:1, NOSCRIPT:1, TEMPLATE:1, IFRAME:1, SVG:1, CANVAS:1,
                     FORM:1, INPUT:1, TEXTAREA:1, SELECT:1, OPTION:1, BUTTON:1, DATALIST:1,
@@ -213,6 +213,24 @@ internal object WebViewPageReader : RenderedPageReader {
                 var pieces = [];
                 var remaining = ($cap * 4) + 1;
                 var stopped = false;
+
+                function isHeading(node) {
+                    if (!node || node.nodeType !== 1) return false;
+                    var tag = node.tagName || '';
+                    if (tag.length === 2 && tag.charAt(0) === 'H' &&
+                        tag.charAt(1) >= '1' && tag.charAt(1) <= '6') return true;
+                    if ((node.getAttribute('role') || '').trim().toLowerCase() === 'heading') return true;
+                    var classes = ' ' + (node.getAttribute('class') || '')
+                        .replace(/\s+/g, ' ').trim() + ' ';
+                    return classes.indexOf(' mw-heading ') >= 0;
+                }
+
+                function isCollapsedSemanticContainer(node, tag, role) {
+                    if (tag === 'SECTION' || tag === 'DETAILS' || role === 'region') return true;
+                    var parent = node.parentElement;
+                    return tag === 'DIV' && parent && parent.tagName === 'SECTION' &&
+                        isHeading(node.previousElementSibling);
+                }
 
                 function appendValue(value) {
                     if (!value) return;
@@ -243,7 +261,21 @@ internal object WebViewPageReader : RenderedPageReader {
                     if (forbiddenRoles[role]) return;
                     var styleText = (node.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
                     if (styleText.indexOf('display:none') >= 0 ||
-                        styleText.indexOf('visibility:hidden') >= 0) return;
+                        styleText.indexOf('visibility:hidden') >= 0 ||
+                        styleText.indexOf('content-visibility:hidden') >= 0) return;
+
+                    var computed = null;
+                    try {
+                        computed = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                    } catch (ignored) {
+                        computed = null;
+                    }
+                    if (computed) {
+                        if (computed.visibility === 'hidden' || computed.visibility === 'collapse' ||
+                            computed.contentVisibility === 'hidden') return;
+                        if (computed.display === 'none' &&
+                            !isCollapsedSemanticContainer(node, tag, role)) return;
+                    }
 
                     if (tag === 'BR') {
                         appendValue('\n');
@@ -255,7 +287,7 @@ internal object WebViewPageReader : RenderedPageReader {
                     if (block) appendValue('\n\n');
                 }
 
-                visit(clone);
+                visit(root);
                 var text = pieces.join('')
                     .replace(/\r\n?/g, '\n')
                     .replace(/[ \t\u00a0\u2000-\u200d\ufeff]+/g, ' ')

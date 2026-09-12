@@ -18,6 +18,7 @@ import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import kotlin.uuid.Uuid
 
 val DEFAULT_AUTO_MODEL_ID = Uuid.parse("b7055fb4-39f9-4042-a88a-0d80ed76cf08")
+val DEFAULT_CLODEX_PROVIDER_ID = Uuid.parse("c88cbc4c-387b-459b-853e-fd56d87643c0")
 val DEFAULT_CODEX_PROVIDER_ID = Uuid.parse("7ce7e322-b995-4b0c-9d48-42e08dcfcdda")
 val DEFAULT_GROK_PROVIDER_ID = Uuid.parse("8f3e1d20-4b6a-4c9e-a1f2-9d5c7e0b3a44")
 val DEFAULT_GEMINI_OAUTH_PROVIDER_ID = Uuid.parse("2b6c1f84-73ad-4e35-b0c7-1a9e4d5f8c21")
@@ -93,6 +94,44 @@ val DEFAULT_PROVIDERS = listOf(
         apiKey = "",
         enabled = false,
         builtIn = true
+    ),
+    // CLODEX is an OpenAI-compatible gateway, so it deliberately goes through the same
+    // ProviderSetting.OpenAI implementation as the other first-class API providers. That keeps
+    // model discovery, Responses API streaming, tools, usage parsing, provider configuration,
+    // and the reorderable provider card on the existing well-tested paths.
+    ProviderSetting.OpenAI(
+        id = DEFAULT_CLODEX_PROVIDER_ID,
+        name = "CLODEX",
+        baseUrl = "https://clodex.xyz/v1",
+        apiKey = "",
+        enabled = false,
+        builtIn = true,
+        useResponseApi = true,
+        responsesPath = "/responses",
+        chatCompletionsPath = "/chat/completions",
+        balanceOption = BalanceOption(enabled = false),
+        description = {
+            Text(
+                text = buildAnnotatedString {
+                    append(stringResource(R.string.clodex_provider_description))
+                    appendLine()
+                    withLink(LinkAnnotation.Url("https://clodex.xyz/dashboard/overview")) {
+                        withStyle(SpanStyle(MaterialTheme.colorScheme.primary)) {
+                            append(stringResource(R.string.clodex_provider_dashboard))
+                        }
+                    }
+                    append(" · ")
+                    withLink(LinkAnnotation.Url("https://clodex.xyz/docs-v2")) {
+                        withStyle(SpanStyle(MaterialTheme.colorScheme.primary)) {
+                            append(stringResource(R.string.clodex_provider_docs))
+                        }
+                    }
+                }
+            )
+        },
+        shortDescription = {
+            Text(stringResource(R.string.clodex_provider_short_description))
+        },
     ),
     ProviderSetting.Codex(
         id = DEFAULT_CODEX_PROVIDER_ID,

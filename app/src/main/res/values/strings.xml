@@ -557,6 +557,10 @@
   <string name="regenerate_confirm_message">Are you sure you want to regenerate this message?</string>
   <string name="render_with_webview">Render with WebView</string>
   <string name="rikkahub_provider_description">Official free AI service, using user sponsorship funds to provide some free models for new users as fallback, no API key required. Has strict rate limits, if you have purchased your own provider, please use your own provider as much as possible.</string>
+  <string name="clodex_provider_description">One API key for GPT, Claude, Gemini, Grok and other models. Uses CLODEX\'s OpenAI-compatible Responses API; add your key, then choose models on the Models tab.</string>
+  <string name="clodex_provider_short_description">OpenAI-compatible · Responses API</string>
+  <string name="clodex_provider_dashboard">Dashboard</string>
+  <string name="clodex_provider_docs">API documentation</string>
   <string name="safe_mode_assistants">Assistants</string>
   <string name="safe_mode_copy">Copy</string>
   <string name="safe_mode_crash_report">Crash Report</string>

@@ -2234,4 +2234,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="workspace_detail_compatibility_mode">兼容模式</string>
   <string name="workspace_detail_compatibility_mode_desc">如果终端无法启动，请尝试启用此功能。这可能会降低性能。适用于新的终端标签页及后续命令。</string>
   <string name="workspace_detail_settings_save_failed">保存设置失败</string>
+  <string name="clodex_provider_description">一个 API 密钥即可使用 GPT、Claude、Gemini、Grok 等模型。使用 CLODEX 的 OpenAI 兼容 Responses API；添加密钥后，在“模型”标签页中选择模型。</string>
+  <string name="clodex_provider_short_description">兼容 OpenAI · Responses API</string>
+  <string name="clodex_provider_dashboard">控制面板</string>
+  <string name="clodex_provider_docs">API 文档</string>
 </resources>

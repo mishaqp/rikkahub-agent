@@ -14,6 +14,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.net.hostIsBlockedLiteral
 import me.rerere.rikkahub.data.ai.net.withEgressGuard
 import me.rerere.search.extract.ExtractMode
+import me.rerere.search.extract.QueryFocusedExtractor
 import me.rerere.search.extract.WebExtractor
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -52,6 +53,89 @@ private fun FetchExtract.toExtractMode(): ExtractMode = when (this) {
     FetchExtract.RAW -> ExtractMode.TEXT // unreachable; RAW never reaches the extractor
 }
 
+/** Focus ranking only means something for prose; every other mode keeps its old behaviour. */
+internal fun supportsFocus(mode: FetchExtract): Boolean =
+    mode == FetchExtract.ARTICLE || mode == FetchExtract.TEXT
+
+/** The optional `focus` argument, or null when absent / blank. */
+internal fun parseFocus(raw: String?): String? = raw?.trim()?.takeIf { it.isNotEmpty() }
+
+/** Same, straight off a tool input object. */
+internal fun parseFocus(obj: kotlinx.serialization.json.JsonObject): String? =
+    parseFocus(obj["focus"]?.jsonPrimitive?.contentOrNull)
+
+/**
+ * Focused ARTICLE/TEXT envelope: rank the *whole* cleaned body (never a pre-windowed slice,
+ * which would make anything past the first 32K characters unfindable) and return the most
+ * relevant passages in document order.
+ *
+ * [QueryFocusedExtractor.focus] is handed `min(maxChars, FOCUS_CHAR_BUDGET)` so a caller that
+ * asked for fewer characters never gets more, and the default focused answer stays close to
+ * 12 KiB instead of the 32 KiB the unfocused path may return.
+ */
+private fun buildFocusedEnvelope(
+    status: Int,
+    ok: Boolean,
+    finalUrl: String,
+    html: String,
+    mode: FetchExtract,
+    maxChars: Int,
+    bodyTruncated: Boolean,
+    headers: Map<String, String>?,
+    focus: String,
+): String {
+    val page = WebExtractor.extractFullText(
+        html = html,
+        baseUrl = finalUrl,
+        mode = mode.toExtractMode(),
+    )
+
+    if (page.text.isBlank()) {
+        return buildJsonObject {
+            put("error", "empty_extraction")
+            put("status", status)
+            put("final_url", finalUrl)
+            put("detail", "The page was fetched but no article text could be extracted from it.")
+            put(
+                "recovery",
+                "Retry with extract_mode='raw' to inspect the markup, or open the page with " +
+                    "the browser tools if it renders its content with JavaScript.",
+            )
+        }.toString()
+    }
+
+    val focused = QueryFocusedExtractor.focus(
+        text = page.text,
+        query = focus,
+        charBudget = minOf(maxChars, QueryFocusedExtractor.FOCUS_CHAR_BUDGET),
+    )
+
+    return buildJsonObject {
+        put("status", status)
+        put("ok", ok)
+        put("final_url", finalUrl)
+        put("extract_mode", mode.name.lowercase())
+        page.title?.let { put("title", it) }
+        page.siteName?.let { put("site_name", it) }
+        page.description?.let { put("description", it) }
+        page.language?.let { put("language", it) }
+        put("text", focused.text)
+        put("focused", true)
+        put("focus", focus)
+        put("chunks_total", focused.chunksTotal)
+        put("chunks_selected", focused.chunksSelected)
+        put("original_chars", focused.originalChars)
+        put("returned_chars", focused.returnedChars)
+        if (focused.fallbackUsed) put("focus_fallback", true)
+        // A focused answer is a selection, not a window: it is "truncated" whenever the page
+        // held more text than was returned, but next_start_index is deliberately absent so the
+        // caller cannot mistake this for character pagination.
+        put("truncated", bodyTruncated || focused.returnedChars < focused.originalChars)
+        put("body_truncated", bodyTruncated)
+        headers?.let { h -> put("headers", buildJsonObject { h.forEach { (k, v) -> put(k, v) } }) }
+    }.toString()
+}
+
 /**
  * Build the response envelope for an extraction-mode fetch. An extraction that yields no
  * text is an error, not a 200 with an empty string: a silent empty body is exactly how a
@@ -60,6 +144,10 @@ private fun FetchExtract.toExtractMode(): ExtractMode = when (this) {
  * [bodyTruncated] means the raw HTML itself hit the read cap before it was fully read; it
  * forces `truncated` true (and surfaces `body_truncated`) so a partial read is never
  * reported as a complete one, even when the extracted-text window was not exhausted.
+ *
+ * [focus] is the optional query behind `web_fetch(extract_mode='article'|'text', focus=...)`.
+ * When it is present the whole cleaned body is ranked (see [buildFocusedEnvelope]); when it is
+ * absent or blank the behaviour is exactly what it was before focus existed.
  */
 internal fun buildExtractEnvelope(
     status: Int,
@@ -72,7 +160,44 @@ internal fun buildExtractEnvelope(
     startIndex: Int,
     bodyTruncated: Boolean,
     headers: Map<String, String>?,
+    focus: String? = null,
 ): String {
+    val effectiveFocus = if (supportsFocus(mode)) parseFocus(focus) else null
+
+    // focus picks its own passages, so raw character pagination is meaningless next to it:
+    // refuse the combination instead of silently ranking a slice.
+    if (effectiveFocus != null && startIndex != 0) {
+        return buildJsonObject {
+            put("error", "focus_start_index_conflict")
+            put("status", status)
+            put("final_url", finalUrl)
+            put(
+                "detail",
+                "focus ranks and selects the most relevant passages itself, so it cannot be " +
+                    "combined with start_index (raw character pagination).",
+            )
+            put(
+                "recovery",
+                "Drop start_index when using focus, or drop focus and page through the text " +
+                    "with start_index / next_start_index.",
+            )
+        }.toString()
+    }
+
+    if (effectiveFocus != null) {
+        return buildFocusedEnvelope(
+            status = status,
+            ok = ok,
+            finalUrl = finalUrl,
+            html = html,
+            mode = mode,
+            maxChars = maxChars,
+            bodyTruncated = bodyTruncated,
+            headers = headers,
+            focus = effectiveFocus,
+        )
+    }
+
     val page = WebExtractor.extract(
         html = html,
         baseUrl = finalUrl,
@@ -151,8 +276,10 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         the returned text (default 32768 when extracting, 8192 for raw); when truncated=true
         pass next_start_index back as start_index to continue. method is GET (default) or
         POST. Response headers are omitted unless include_headers=true. Private, loopback and
-        link-local addresses are refused. Returns {status, ok, final_url, extract_mode, title,
-        text, truncated, next_start_index} or {error, detail, recovery}.
+        link-local addresses are refused. focus is an optional query that returns only the most
+        relevant article/text passages (article/text modes) instead of the whole page. Returns
+        {status, ok, final_url, extract_mode, title, text, truncated, next_start_index} or
+        {error, detail, recovery}.
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -188,6 +315,14 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                 put("body", buildJsonObject {
                     put("type", "string")
                     put("description", "Optional request body string (POST only)")
+                })
+                put("focus", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "Optional query used to return only the most relevant article/text " +
+                            "passages (article/text modes only)",
+                    )
                 })
             },
             required = listOf("url"),
@@ -250,6 +385,7 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         val defaultCap = if (mode == FetchExtract.RAW) WEB_FETCH_BODY_CAP else WEB_FETCH_EXTRACT_CAP
         val maxChars = obj["max_chars"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             ?.coerceIn(1, defaultCap) ?: defaultCap
+        val focus = parseFocus(obj)
 
         val request = try {
             val builder = Request.Builder().url(url)
@@ -320,6 +456,7 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                             startIndex = startIndex,
                             bodyTruncated = bodyTruncated,
                             headers = headerMap,
+                            focus = focus,
                         )
                     }
                 }

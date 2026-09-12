@@ -111,12 +111,12 @@ private fun storeSource(
 
 /** The single place `focus` plus raw pagination is refused, shared by every entry point. */
 private fun focusStartIndexConflictEnvelope(
-    status: Int,
+    status: Int?,
     finalUrl: String,
     sourceId: String? = null,
 ): String = buildJsonObject {
     put("error", "focus_start_index_conflict")
-    put("status", status)
+    status?.let { put("status", it) }
     put("final_url", finalUrl)
     sourceId?.let { put("source_id", it) }
     put(
@@ -215,7 +215,7 @@ private fun buildFocusedEnvelope(
  * cached path (text already held) both come through here, so they rank and report identically.
  */
 internal fun focusedEnvelope(
-    status: Int,
+    status: Int?,
     ok: Boolean,
     finalUrl: String,
     page: ExtractedPage,
@@ -226,6 +226,7 @@ internal fun focusedEnvelope(
     focus: String,
     cached: Boolean,
     sourceId: String?,
+    sourceKind: String? = null,
 ): String {
     if (page.text.isBlank()) {
         return buildJsonObject {
@@ -248,11 +249,13 @@ internal fun focusedEnvelope(
     )
 
     return buildJsonObject {
-        put("status", status)
+        // A rendered browser snapshot has no HTTP status; omitting it is honest, a fake 200 is not.
+        status?.let { put("status", it) }
         put("ok", ok)
         put("final_url", finalUrl)
         put("extract_mode", mode.name.lowercase())
         sourceId?.let { put("source_id", it) }
+        sourceKind?.let { put("source_kind", it) }
         if (cached) put("cached", true)
         page.title?.let { put("title", it) }
         page.siteName?.let { put("site_name", it) }
@@ -321,15 +324,17 @@ internal fun buildCachedEnvelope(
             focus = effectiveFocus,
             cached = true,
             sourceId = source.sourceId,
+            sourceKind = source.origin.wireName,
         )
     }
 
     val window = WebExtractor.sliceWindow(source.text, maxChars, startIndex)
     return buildJsonObject {
-        put("status", source.status)
+        source.status?.let { put("status", it) }
         put("ok", true)
         put("final_url", source.url)
         put("extract_mode", source.mode.name.lowercase())
+        put("source_kind", source.origin.wireName)
         put("source_id", source.sourceId)
         put("cached", true)
         source.title?.let { put("title", it) }
@@ -495,8 +500,10 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         pass next_start_index back as start_index to continue. method is GET (default) or
         POST. Response headers are omitted unless include_headers=true. Private, loopback and
         link-local addresses are refused. source_id re-reads a page an earlier article/text call
-        already extracted, entirely from memory and without a second request; it is mutually
-        exclusive with url. focus is an optional query that returns only the most
+        already extracted - including a browser_get_text snapshot of a rendered page - entirely
+        from memory, without a second request and without touching the browser; prefer it over
+        re-reading a page in the browser. It is mutually exclusive with url. focus is an optional
+        query that returns only the most
         relevant article/text passages (article/text modes) instead of the whole page. Without
         focus, truncated=true together with next_start_index means ordinary character pagination
         and you continue by passing start_index back; a focused result is never continued that

@@ -31,8 +31,10 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
         or 'metadata'. max_chars caps the result (default 32768); when truncated=true pass
         next_start_index back as start_index to continue reading. Use this instead of
         web_fetch when you want to read a page rather than inspect its markup. source_id
-        re-reads a page an earlier article/text call already extracted, with no second request,
-        and is mutually exclusive with url. focus is an
+        re-reads a page an earlier article/text call already extracted - including a
+        browser_get_text snapshot of a rendered page - with no second request and without touching
+        the browser, so ask follow-up questions through the returned source_id instead of
+        re-reading the page in the browser. It is mutually exclusive with url. focus is an
         optional query that returns only the most relevant article/text passages (article/text
         modes) instead of the whole page; without focus, truncated=true plus next_start_index
         means ordinary pagination you continue with start_index, while a focused result is not

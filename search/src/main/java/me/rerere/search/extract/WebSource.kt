@@ -55,15 +55,31 @@ object WebSourceId {
 }
 
 /**
- * One cached page: the cleaned text plus the metadata derived from the same response.
+ * Where a cached page came from. A browser snapshot is not an HTTP response, so the two must be
+ * distinguishable in the envelope instead of a browser page pretending to have a status code.
+ */
+enum class WebSourceOrigin(val wireName: String) {
+    /** Fetched over HTTP by web_fetch / web_extract. */
+    HTTP("http"),
+
+    /** Read out of the live rendered page by a browser tool. */
+    BROWSER("browser"),
+}
+
+/**
+ * One cached page: the cleaned text plus the metadata derived from the same source.
  *
  * This type intentionally has no field for request headers, response headers, cookies,
- * credentials or a POST body, so a cache entry physically cannot leak them.
+ * credentials or a POST body, so a cache entry physically cannot leak them. A browser snapshot
+ * stores only rendered, visible text - never DOM, script, style or form state.
+ *
+ * [status] is null for a [WebSourceOrigin.BROWSER] source: a rendered page has no HTTP status of
+ * its own, and inventing a 200 would make the envelope lie about where the text came from.
  */
 data class WebSource(
     val sourceId: String,
     val url: String,
-    val status: Int,
+    val status: Int? = null,
     val mode: ExtractMode,
     val title: String? = null,
     val siteName: String? = null,
@@ -72,6 +88,7 @@ data class WebSource(
     val text: String = "",
     val bodyTruncated: Boolean = false,
     val storedAtMillis: Long = 0L,
+    val origin: WebSourceOrigin = WebSourceOrigin.HTTP,
 )
 
 /**

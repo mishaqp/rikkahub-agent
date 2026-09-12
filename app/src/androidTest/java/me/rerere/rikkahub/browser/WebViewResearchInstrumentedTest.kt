@@ -115,7 +115,16 @@ class WebViewResearchInstrumentedTest {
             "article prose must be returned; envelope: $env",
             env.str("text").orEmpty().contains(PROSE_MARKER),
         )
-        assertEquals("https://research.invalid/article", env.str("current_url"))
+        // The envelope reads url/title off the live WebView, so both must be populated. The exact
+        // URL is deliberately not compared: an inlined document (loadDataWithBaseURL) has no
+        // navigation behind it and Chromium reports "about:blank" as the visible URL, because the
+        // base URL only resolves relative references. The read path is still asserted end to end -
+        // Readability extraction, article text, source_id and source_kind below.
+        assertNotNull("the envelope must carry the live page's URL; envelope: $env", env.str("current_url"))
+        assertTrue(
+            "current_url must not be blank; envelope: $env",
+            !env.str("current_url").orEmpty().isBlank(),
+        )
         assertEquals("Instrumented research article", env.str("title"))
     }
 
@@ -435,11 +444,17 @@ class WebViewResearchInstrumentedTest {
         return result as T
     }
 
-    private fun resumedActivityNames(): List<String> =
+    /**
+     * `ActivityLifecycleMonitorRegistry.getActivitiesInStage` is a main-thread-only API and throws
+     * `IllegalStateException: Querying activity state off main thread is not allowed` from any other
+     * thread, so it goes through the same [onMain] helper the rest of the harness uses.
+     */
+    private fun resumedActivityNames(): List<String> = onMain {
         ActivityLifecycleMonitorRegistry.getInstance()
             .getActivitiesInStage(Stage.RESUMED)
             .map { it.javaClass.name }
             .sorted()
+    }
 
     private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 

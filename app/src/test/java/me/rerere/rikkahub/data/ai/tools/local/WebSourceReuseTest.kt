@@ -7,6 +7,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.search.extract.WebSourceId
 import me.rerere.search.extract.webSourceCache
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,6 +18,8 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
@@ -87,7 +90,8 @@ class WebSourceReuseTest {
 
         val first = invoke(tool, """{"url":"https://example.com/a","extract_mode":"article"}""")
         val id = first["source_id"]!!.jsonPrimitive.content
-        assertTrue(id.startsWith("web-"))
+        assertTrue("id was $id", id.startsWith("src_"))
+        assertTrue(WebSourceId.isWellFormed(id))
         assertTrue(first["text"]!!.jsonPrimitive.content.contains("Команда выпустила"))
         assertEquals(1, net.requests.get())
 
@@ -97,6 +101,38 @@ class WebSourceReuseTest {
         assertTrue(second["text"]!!.jsonPrimitive.content.contains("Команда выпустила"))
         // The proof: reusing a source_id issues no HTTP request at all.
         assertEquals(1, net.requests.get())
+    }
+
+    @Test
+    fun `two reads of one url get different source ids`() {
+        val tool = fetchTool()
+
+        val first = invoke(tool, """{"url":"https://example.com/a","extract_mode":"article"}""")
+        val second = invoke(tool, """{"url":"https://example.com/a","extract_mode":"article"}""")
+
+        val firstId = first["source_id"]!!.jsonPrimitive.content
+        val secondId = second["source_id"]!!.jsonPrimitive.content
+        assertNotEquals(firstId, secondId)
+        // Both are live at once, and the second one is the one the cache reports.
+        assertNotNull(webSourceCache.get(firstId))
+        assertNotNull(webSourceCache.get(secondId))
+        assertEquals(secondId, webSourceCache.get(secondId)!!.sourceId)
+        assertEquals(2, net.requests.get())
+    }
+
+    @Test
+    fun `the source id reveals nothing about the url`() {
+        val tool = fetchTool()
+
+        val json = invoke(
+            tool,
+            """{"url":"https://unique-host-name-xyz.example/secret-path","extract_mode":"article"}""",
+        )
+        val id = json["source_id"]!!.jsonPrimitive.content
+
+        assertFalse(id.contains("unique-host-name-xyz"))
+        assertFalse(id.contains("example"))
+        assertFalse(id.contains("secret-path"))
     }
 
     @Test

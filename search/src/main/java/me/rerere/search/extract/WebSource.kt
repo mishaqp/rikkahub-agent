@@ -1,47 +1,56 @@
 package me.rerere.search.extract
 
-import java.security.MessageDigest
-
 /**
- * Opaque, stable handle for a page a web tool has already read.
+ * Generator for the opaque handle a web tool hands back for a page it has read.
  *
- * The identifier is a one-way digest of the normalised URL, so it reveals nothing about the
- * page beyond its address and can be used as a cache key without trusting the caller.
+ * The identifier is *not* derived from the URL: it is fresh randomness, so it cannot be reversed
+ * into an address, two reads of the same page get different handles, and the hostname never
+ * appears in the value. 16 random bytes (128 bits) make an accidental collision negligible.
  */
 object WebSourceId {
 
-    const val PREFIX = "web-"
+    const val PREFIX = "src_"
 
-    /** Hex characters in the identifier after [PREFIX]. */
-    const val HEX_CHARS = 16
+    /** Random bytes behind one identifier; 16 bytes keeps the value short and the collision risk nil. */
+    const val RANDOM_BYTES = 16
+
+    /** Total length of a well-formed identifier. */
+    const val LENGTH = PREFIX.length + RANDOM_BYTES * 2
 
     private val HEX = "0123456789abcdef".toCharArray()
 
-    /** Identifier for [rawUrl], insensitive to surrounding whitespace and to a URL fragment. */
-    fun of(rawUrl: String): String {
-        val normalized = normalize(rawUrl)
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(normalized.toByteArray(Charsets.UTF_8))
-        val builder = StringBuilder(PREFIX.length + HEX_CHARS)
+    /**
+     * Cryptographically strong by default. [random] exists as a seam for tests that need
+     * reproducible values; production callers never pass it.
+     */
+    private val defaultRandom: java.util.Random = java.security.SecureRandom()
+
+    /** A fresh identifier, unrelated to any URL. */
+    fun newId(random: java.util.Random = defaultRandom): String {
+        val bytes = ByteArray(RANDOM_BYTES)
+        random.nextBytes(bytes)
+        val builder = StringBuilder(LENGTH)
         builder.append(PREFIX)
-        for (i in 0 until HEX_CHARS / 2) {
-            val value = digest[i].toInt() and 0xFF
+        for (byte in bytes) {
+            val value = byte.toInt() and 0xFF
             builder.append(HEX[(value shr 4) and 0x0F]).append(HEX[value and 0x0F])
         }
         return builder.toString()
     }
 
-    /** True when [value] looks like an identifier this object could have produced. */
-    fun looksLikeId(value: String): Boolean =
-        value.length == PREFIX.length + HEX_CHARS &&
+    /** True when [value] has the shape [newId] produces: the prefix plus lowercase hex. */
+    fun isWellFormed(value: String): Boolean =
+        value.length == LENGTH &&
             value.startsWith(PREFIX) &&
             value.substring(PREFIX.length).all { it in '0'..'9' || it in 'a'..'f' }
 
-    private fun normalize(rawUrl: String): String {
-        val trimmed = rawUrl.trim()
-        // A fragment never changes what the server returns, so it must not change the id.
-        val hash = trimmed.indexOf('#')
-        return if (hash >= 0) trimmed.substring(0, hash) else trimmed
+    /**
+     * A deterministic generator for tests and tooling that need stable identifiers; not used by
+     * the tools themselves.
+     */
+    fun deterministic(seed: Long): () -> String {
+        val random = java.util.Random(seed)
+        return { newId(random) }
     }
 }
 

@@ -77,7 +77,9 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
                     )
                 })
             },
-            required = listOf("url"),
+            // Either url or source_id names the page, so neither can be required here; the
+            // runtime checks below report missing_source / url_source_conflict.
+            required = emptyList(),
         )
     },
     execute = { input ->

@@ -94,7 +94,7 @@ private fun storeSource(
     if (status !in 200..299 || page.text.isBlank()) return null
 
     val source = WebSource(
-        sourceId = WebSourceId.of(url),
+        sourceId = WebSourceId.newId(),
         url = url,
         status = status,
         mode = mode.toExtractMode(),
@@ -557,7 +557,9 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                     )
                 })
             },
-            required = listOf("url"),
+            // Either url or source_id names the page, so neither can be required here; the
+            // runtime checks below report missing_source / url_source_conflict.
+            required = emptyList(),
         )
     },
     execute = { input ->

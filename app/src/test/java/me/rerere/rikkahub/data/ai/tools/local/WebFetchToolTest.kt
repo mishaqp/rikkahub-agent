@@ -5,6 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import okhttp3.OkHttpClient
@@ -35,6 +36,19 @@ class WebFetchToolTest {
     }
 
     private fun JsonObject.error() = this["error"]?.jsonPrimitive?.content
+
+    @Test fun `the schema accepts a source_id call and does not require url`() {
+        val schema = tool.parameters() as InputSchema.Obj
+
+        assertFalse(
+            "url must not be required - source_id alone is a valid call",
+            schema.required?.contains("url") == true,
+        )
+        assertTrue(schema.required?.contains("source_id") != true)
+        assertTrue(schema.properties.containsKey("url"))
+        assertTrue(schema.properties.containsKey("source_id"))
+        assertTrue(schema.properties.containsKey("focus"))
+    }
 
     @Test fun `missing url and source id is rejected`() {
         assertEquals("missing_source", invoke("""{}""").error())

@@ -10,6 +10,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.net.hostIsBlockedLiteral
 import me.rerere.rikkahub.data.ai.net.withEgressGuard
+import me.rerere.search.extract.webSourceCache
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,7 +30,9 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
         removed. mode: 'article' (default, main prose), 'text' (all body text), 'links',
         or 'metadata'. max_chars caps the result (default 32768); when truncated=true pass
         next_start_index back as start_index to continue reading. Use this instead of
-        web_fetch when you want to read a page rather than inspect its markup. focus is an
+        web_fetch when you want to read a page rather than inspect its markup. source_id
+        re-reads a page an earlier article/text call already extracted, with no second request,
+        and is mutually exclusive with url. focus is an
         optional query that returns only the most relevant article/text passages (article/text
         modes) instead of the whole page; without focus, truncated=true plus next_start_index
         means ordinary pagination you continue with start_index, while a focused result is not
@@ -65,6 +68,14 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
                             "passages (article/text modes only)",
                     )
                 })
+                put("source_id", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "Re-read a page an earlier article/text call returned, without another " +
+                            "request. Mutually exclusive with url",
+                    )
+                })
             },
             required = listOf("url"),
         )
@@ -72,8 +83,28 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
     execute = { input ->
         val obj = input.jsonObject
         val url = obj["url"]?.jsonPrimitive?.contentOrNull?.trim()
+        val sourceId = parseSourceId(obj)
+
+        if (url.isNullOrBlank() && sourceId == null) {
+            return@Tool fmTextPart(missingSourceEnvelope())
+        }
+        if (!url.isNullOrBlank() && sourceId != null) {
+            return@Tool fmTextPart(urlSourceConflictEnvelope())
+        }
         if (url.isNullOrBlank()) {
-            return@Tool fmTextPart(fmErrEnvelope("missing_url", "url is required"))
+            val source = webSourceCache.get(sourceId!!)
+                ?: return@Tool fmTextPart(unknownSourceEnvelope(sourceId))
+            val cachedStart = obj["start_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+            val cachedMax = obj["max_chars"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                ?.coerceIn(1, WEB_FETCH_EXTRACT_CAP) ?: WEB_FETCH_EXTRACT_CAP
+            return@Tool fmTextPart(
+                buildCachedEnvelope(
+                    source = source,
+                    maxChars = cachedMax,
+                    startIndex = cachedStart,
+                    focus = parseFocus(obj),
+                ),
+            )
         }
         if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
             return@Tool fmTextPart(
@@ -135,6 +166,7 @@ fun webExtractTool(client: OkHttpClient): Tool = Tool(
                         bodyTruncated = bodyTruncated,
                         headers = null,
                         focus = focus,
+                        cacheable = true,
                     )
                 }
             } catch (e: java.io.InterruptedIOException) {

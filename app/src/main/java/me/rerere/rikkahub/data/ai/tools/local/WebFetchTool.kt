@@ -5,6 +5,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -14,8 +15,12 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.net.hostIsBlockedLiteral
 import me.rerere.rikkahub.data.ai.net.withEgressGuard
 import me.rerere.search.extract.ExtractMode
+import me.rerere.search.extract.ExtractedPage
 import me.rerere.search.extract.QueryFocusedExtractor
 import me.rerere.search.extract.WebExtractor
+import me.rerere.search.extract.WebSource
+import me.rerere.search.extract.WebSourceId
+import me.rerere.search.extract.webSourceCache
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -53,16 +58,111 @@ private fun FetchExtract.toExtractMode(): ExtractMode = when (this) {
     FetchExtract.RAW -> ExtractMode.TEXT // unreachable; RAW never reaches the extractor
 }
 
-/** Focus ranking only means something for prose; every other mode keeps its old behaviour. */
-internal fun supportsFocus(mode: FetchExtract): Boolean =
+/** Prose modes: the only ones that carry a body worth ranking or caching. */
+internal fun isProseMode(mode: FetchExtract): Boolean =
     mode == FetchExtract.ARTICLE || mode == FetchExtract.TEXT
+
+/** Focus ranking only means something for prose; every other mode keeps its old behaviour. */
+internal fun supportsFocus(mode: FetchExtract): Boolean = isProseMode(mode)
 
 /** The optional `focus` argument, or null when absent / blank. */
 internal fun parseFocus(raw: String?): String? = raw?.trim()?.takeIf { it.isNotEmpty() }
 
 /** Same, straight off a tool input object. */
-internal fun parseFocus(obj: kotlinx.serialization.json.JsonObject): String? =
+internal fun parseFocus(obj: JsonObject): String? =
     parseFocus(obj["focus"]?.jsonPrimitive?.contentOrNull)
+
+/** The optional `source_id` argument, or null when absent / blank. */
+internal fun parseSourceId(obj: JsonObject): String? =
+    obj["source_id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * Remember a page the caller just read, when the request is one this tool is willing to keep:
+ * a plain GET (no body, no caller headers) of prose that came back successful with text. Only
+ * [WebSource] fields are stored, so no header, cookie, credential or POST body can reach the
+ * cache. Returns the identifier to hand back, or null when nothing was stored.
+ */
+private fun storeSource(
+    url: String,
+    status: Int,
+    mode: FetchExtract,
+    page: ExtractedPage,
+    bodyTruncated: Boolean,
+    cacheable: Boolean,
+): String? {
+    if (!cacheable || !isProseMode(mode)) return null
+    if (status !in 200..299 || page.text.isBlank()) return null
+
+    val source = WebSource(
+        sourceId = WebSourceId.of(url),
+        url = url,
+        status = status,
+        mode = mode.toExtractMode(),
+        title = page.title,
+        siteName = page.siteName,
+        description = page.description,
+        language = page.language,
+        text = page.text,
+        bodyTruncated = bodyTruncated,
+        storedAtMillis = System.currentTimeMillis(),
+    )
+    return if (webSourceCache.put(source)) source.sourceId else null
+}
+
+/** The single place `focus` plus raw pagination is refused, shared by every entry point. */
+private fun focusStartIndexConflictEnvelope(
+    status: Int,
+    finalUrl: String,
+    sourceId: String? = null,
+): String = buildJsonObject {
+    put("error", "focus_start_index_conflict")
+    put("status", status)
+    put("final_url", finalUrl)
+    sourceId?.let { put("source_id", it) }
+    put(
+        "detail",
+        "focus ranks and selects the most relevant passages itself, so it cannot be " +
+            "combined with start_index (raw character pagination).",
+    )
+    put(
+        "recovery",
+        "Drop start_index when using focus, or drop focus and page through the text " +
+            "with start_index / next_start_index.",
+    )
+}.toString()
+
+/** Neither a url nor a source_id: there is nothing to read. */
+internal fun missingSourceEnvelope(): String = buildJsonObject {
+    put("error", "missing_source")
+    put("detail", "Pass either url (to fetch a page) or source_id (to re-read a cached one).")
+    put(
+        "recovery",
+        "Call with url=... to read a new page, or with the source_id returned by an " +
+            "earlier article/text call.",
+    )
+}.toString()
+
+/** Both a url and a source_id: the caller has to choose one. */
+internal fun urlSourceConflictEnvelope(): String = buildJsonObject {
+    put("error", "url_source_conflict")
+    put("detail", "url and source_id are mutually exclusive.")
+    put(
+        "recovery",
+        "Use url=... to fetch a page, or source_id=... to re-read a cached one, not both.",
+    )
+}.toString()
+
+/** The source_id is unknown, evicted or past its TTL. */
+internal fun unknownSourceEnvelope(sourceId: String): String = buildJsonObject {
+    put("error", "unknown_source_id")
+    put("source_id", sourceId)
+    put(
+        "detail",
+        "No cached page with this source_id: it was never read, or it left the cache " +
+            "(24 sources, 45 minutes, 4 MiB in memory).",
+    )
+    put("recovery", "Fetch the page again with url=... and reuse the new source_id.")
+}.toString()
 
 /**
  * Focused ARTICLE/TEXT envelope: rank the *whole* cleaned body (never a pre-windowed slice,
@@ -88,13 +188,45 @@ private fun buildFocusedEnvelope(
     bodyTruncated: Boolean,
     headers: Map<String, String>?,
     focus: String,
+    cacheable: Boolean = false,
 ): String {
     val page = WebExtractor.extractFullText(
         html = html,
         baseUrl = finalUrl,
         mode = mode.toExtractMode(),
     )
+    return focusedEnvelope(
+        status = status,
+        ok = ok,
+        finalUrl = finalUrl,
+        page = page,
+        mode = mode,
+        maxChars = maxChars,
+        bodyTruncated = bodyTruncated,
+        headers = headers,
+        focus = focus,
+        cached = false,
+        sourceId = storeSource(finalUrl, status, mode, page, bodyTruncated, cacheable),
+    )
+}
 
+/**
+ * Focused envelope over an already extracted page. The live path (HTML just fetched) and the
+ * cached path (text already held) both come through here, so they rank and report identically.
+ */
+internal fun focusedEnvelope(
+    status: Int,
+    ok: Boolean,
+    finalUrl: String,
+    page: ExtractedPage,
+    mode: FetchExtract,
+    maxChars: Int,
+    bodyTruncated: Boolean,
+    headers: Map<String, String>?,
+    focus: String,
+    cached: Boolean,
+    sourceId: String?,
+): String {
     if (page.text.isBlank()) {
         return buildJsonObject {
             put("error", "empty_extraction")
@@ -120,6 +252,8 @@ private fun buildFocusedEnvelope(
         put("ok", ok)
         put("final_url", finalUrl)
         put("extract_mode", mode.name.lowercase())
+        sourceId?.let { put("source_id", it) }
+        if (cached) put("cached", true)
         page.title?.let { put("title", it) }
         page.siteName?.let { put("site_name", it) }
         page.description?.let { put("description", it) }
@@ -143,6 +277,78 @@ private fun buildFocusedEnvelope(
         put("body_truncated", bodyTruncated)
         headers?.let { h -> put("headers", buildJsonObject { h.forEach { (k, v) -> put(k, v) } }) }
     }.toString()
+}
+
+/**
+ * Answer a `source_id` call out of the in-memory cache. No request is made and no HTML is
+ * re-parsed: without focus the cached text is windowed exactly like a fresh extraction, with
+ * focus it goes through the same BM25 selection. `extract_mode` reports what the cached source
+ * actually holds, since a stored page is always extracted prose.
+ */
+internal fun buildCachedEnvelope(
+    source: WebSource,
+    maxChars: Int,
+    startIndex: Int,
+    focus: String?,
+): String {
+    val effectiveFocus = parseFocus(focus)
+
+    if (effectiveFocus != null && startIndex != 0) {
+        return focusStartIndexConflictEnvelope(
+            status = source.status,
+            finalUrl = source.url,
+            sourceId = source.sourceId,
+        )
+    }
+
+    if (effectiveFocus != null) {
+        val mode = source.mode.toFetchExtract() ?: FetchExtract.ARTICLE
+        return focusedEnvelope(
+            status = source.status,
+            ok = true,
+            finalUrl = source.url,
+            page = ExtractedPage(
+                title = source.title,
+                siteName = source.siteName,
+                description = source.description,
+                language = source.language,
+                text = source.text,
+            ),
+            mode = mode,
+            maxChars = maxChars,
+            bodyTruncated = source.bodyTruncated,
+            headers = null,
+            focus = effectiveFocus,
+            cached = true,
+            sourceId = source.sourceId,
+        )
+    }
+
+    val window = WebExtractor.sliceWindow(source.text, maxChars, startIndex)
+    return buildJsonObject {
+        put("status", source.status)
+        put("ok", true)
+        put("final_url", source.url)
+        put("extract_mode", source.mode.name.lowercase())
+        put("source_id", source.sourceId)
+        put("cached", true)
+        source.title?.let { put("title", it) }
+        source.siteName?.let { put("site_name", it) }
+        source.description?.let { put("description", it) }
+        source.language?.let { put("language", it) }
+        put("text", window.text)
+        put("truncated", window.truncated || source.bodyTruncated)
+        put("body_truncated", source.bodyTruncated)
+        window.nextStartIndex?.let { put("next_start_index", it) }
+    }.toString()
+}
+
+/** Map a stored [ExtractMode] onto the tool-level enum; null for modes a source never holds. */
+private fun ExtractMode.toFetchExtract(): FetchExtract? = when (this) {
+    ExtractMode.ARTICLE -> FetchExtract.ARTICLE
+    ExtractMode.TEXT -> FetchExtract.TEXT
+    ExtractMode.LINKS -> null
+    ExtractMode.METADATA -> null
 }
 
 /**
@@ -170,27 +376,14 @@ internal fun buildExtractEnvelope(
     bodyTruncated: Boolean,
     headers: Map<String, String>?,
     focus: String? = null,
+    cacheable: Boolean = false,
 ): String {
     val effectiveFocus = if (supportsFocus(mode)) parseFocus(focus) else null
 
     // focus picks its own passages, so raw character pagination is meaningless next to it:
     // refuse the combination instead of silently ranking a slice.
     if (effectiveFocus != null && startIndex != 0) {
-        return buildJsonObject {
-            put("error", "focus_start_index_conflict")
-            put("status", status)
-            put("final_url", finalUrl)
-            put(
-                "detail",
-                "focus ranks and selects the most relevant passages itself, so it cannot be " +
-                    "combined with start_index (raw character pagination).",
-            )
-            put(
-                "recovery",
-                "Drop start_index when using focus, or drop focus and page through the text " +
-                    "with start_index / next_start_index.",
-            )
-        }.toString()
+        return focusStartIndexConflictEnvelope(status = status, finalUrl = finalUrl)
     }
 
     if (effectiveFocus != null) {
@@ -204,16 +397,31 @@ internal fun buildExtractEnvelope(
             bodyTruncated = bodyTruncated,
             headers = headers,
             focus = effectiveFocus,
+            cacheable = cacheable,
         )
     }
 
-    val page = WebExtractor.extract(
+    // Extract the whole cleaned body first, for two reasons: the cache has to hold the entire
+    // text (a window would make a later source_id read start mid-page), and the window below is
+    // then taken from that same text rather than from a separate parse.
+    val full = WebExtractor.extractFullText(
         html = html,
         baseUrl = finalUrl,
         mode = mode.toExtractMode(),
-        maxChars = maxChars,
-        startIndex = startIndex,
     )
+    val page = when (mode) {
+        // Links and metadata are not prose and were never windowed.
+        FetchExtract.LINKS, FetchExtract.METADATA -> full
+        else -> {
+            val window = WebExtractor.sliceWindow(full.text, maxChars, startIndex)
+            full.copy(
+                text = window.text,
+                truncated = window.truncated,
+                nextStartIndex = window.nextStartIndex,
+            )
+        }
+    }
+    val sourceId = storeSource(finalUrl, status, mode, full, bodyTruncated, cacheable)
 
     val nothingUseful = mode != FetchExtract.METADATA &&
         mode != FetchExtract.LINKS &&
@@ -242,6 +450,7 @@ internal fun buildExtractEnvelope(
         put("ok", ok)
         put("final_url", finalUrl)
         put("extract_mode", mode.name.lowercase())
+        sourceId?.let { put("source_id", it) }
         page.title?.let { put("title", it) }
         page.siteName?.let { put("site_name", it) }
         page.description?.let { put("description", it) }
@@ -285,7 +494,9 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         the returned text (default 32768 when extracting, 8192 for raw); when truncated=true
         pass next_start_index back as start_index to continue. method is GET (default) or
         POST. Response headers are omitted unless include_headers=true. Private, loopback and
-        link-local addresses are refused. focus is an optional query that returns only the most
+        link-local addresses are refused. source_id re-reads a page an earlier article/text call
+        already extracted, entirely from memory and without a second request; it is mutually
+        exclusive with url. focus is an optional query that returns only the most
         relevant article/text passages (article/text modes) instead of the whole page. Without
         focus, truncated=true together with next_start_index means ordinary character pagination
         and you continue by passing start_index back; a focused result is never continued that
@@ -337,6 +548,14 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                             "passages (article/text modes only)",
                     )
                 })
+                put("source_id", buildJsonObject {
+                    put("type", "string")
+                    put(
+                        "description",
+                        "Re-read a page an earlier article/text call returned, without another " +
+                            "request. Mutually exclusive with url",
+                    )
+                })
             },
             required = listOf("url"),
         )
@@ -344,8 +563,29 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
     execute = { input ->
         val obj = input.jsonObject
         val url = obj["url"]?.jsonPrimitive?.contentOrNull?.trim()
+        val sourceId = parseSourceId(obj)
+
+        if (url.isNullOrBlank() && sourceId == null) {
+            return@Tool fmTextPart(missingSourceEnvelope())
+        }
+        if (!url.isNullOrBlank() && sourceId != null) {
+            return@Tool fmTextPart(urlSourceConflictEnvelope())
+        }
         if (url.isNullOrBlank()) {
-            return@Tool fmTextPart(fmErrEnvelope("missing_url", "url is required"))
+            // source_id: served entirely from the in-memory cache - no request, no parsing.
+            val source = webSourceCache.get(sourceId!!)
+                ?: return@Tool fmTextPart(unknownSourceEnvelope(sourceId))
+            val cachedStart = obj["start_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+            val cachedMax = obj["max_chars"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                ?.coerceIn(1, WEB_FETCH_EXTRACT_CAP) ?: WEB_FETCH_EXTRACT_CAP
+            return@Tool fmTextPart(
+                buildCachedEnvelope(
+                    source = source,
+                    maxChars = cachedMax,
+                    startIndex = cachedStart,
+                    focus = parseFocus(obj),
+                ),
+            )
         }
         if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
             return@Tool fmTextPart(
@@ -399,6 +639,12 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
         val maxChars = obj["max_chars"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             ?.coerceIn(1, defaultCap) ?: defaultCap
         val focus = parseFocus(obj)
+
+        // Only a plain GET of a page, with nothing caller-supplied that could be secret, is
+        // worth remembering; a caller header may be an authorization token.
+        val callerHeaders = obj["headers"] as? JsonObject
+        val cacheable = method == "GET" && bodyStr == null &&
+            (callerHeaders == null || callerHeaders.isEmpty())
 
         val request = try {
             val builder = Request.Builder().url(url)
@@ -470,6 +716,7 @@ fun webFetchTool(client: OkHttpClient): Tool = Tool(
                             bodyTruncated = bodyTruncated,
                             headers = headerMap,
                             focus = focus,
+                            cacheable = cacheable,
                         )
                     }
                 }

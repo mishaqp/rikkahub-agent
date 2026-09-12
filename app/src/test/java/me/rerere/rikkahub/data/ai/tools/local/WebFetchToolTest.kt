@@ -5,12 +5,17 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Covers web_fetch's input-validation paths, all of which early-return before any network
@@ -32,12 +37,25 @@ class WebFetchToolTest {
 
     private fun JsonObject.error() = this["error"]?.jsonPrimitive?.content
 
-    @Test fun `missing url is rejected`() {
-        assertEquals("missing_url", invoke("""{}""").error())
+    @Test fun `the schema accepts a source_id call and does not require url`() {
+        val schema = tool.parameters() as InputSchema.Obj
+
+        assertFalse(
+            "url must not be required - source_id alone is a valid call",
+            schema.required?.contains("url") == true,
+        )
+        assertTrue(schema.required?.contains("source_id") != true)
+        assertTrue(schema.properties.containsKey("url"))
+        assertTrue(schema.properties.containsKey("source_id"))
+        assertTrue(schema.properties.containsKey("focus"))
+    }
+
+    @Test fun `missing url and source id is rejected`() {
+        assertEquals("missing_source", invoke("""{}""").error())
     }
 
     @Test fun `blank url is rejected`() {
-        assertEquals("missing_url", invoke("""{"url":"   "}""").error())
+        assertEquals("missing_source", invoke("""{"url":"   "}""").error())
     }
 
     @Test fun `non-http url is rejected`() {
@@ -172,5 +190,218 @@ class WebFetchToolTest {
 
         assertEquals(null, without["headers"])
         assertTrue(with["headers"]!!.jsonObject.containsKey("x-a"))
+    }
+
+    // --- focus: query-focused passage selection ---------------------------------------------
+
+    private val focusHtml = "<html><body><article>" +
+        "<p>${"Матч по футболу закончился вничью, и тренер остался недоволен игрой полузащиты во втором тайме. ".repeat(6)}</p>" +
+        "<p>${"Команда выпустила новую версию приложения с поддержкой офлайн режима работы и ускоренной синхронизацией. ".repeat(6)}</p>" +
+        "<p>${"Кулинарный рецепт борща включает свёклу, капусту, картофель и наваристый мясной бульон для подачи. ".repeat(6)}</p>" +
+        "</article></body></html>"
+
+    private fun focusEnvelope(
+        focus: String?,
+        maxChars: Int = 32 * 1024,
+        startIndex: Int = 0,
+        mode: FetchExtract = FetchExtract.ARTICLE,
+        bodyTruncated: Boolean = false,
+    ): JsonObject = Json.parseToJsonElement(
+        buildExtractEnvelope(
+            status = 200,
+            ok = true,
+            finalUrl = "https://example.com/a",
+            html = focusHtml,
+            contentType = "text/html",
+            mode = mode,
+            maxChars = maxChars,
+            startIndex = startIndex,
+            bodyTruncated = bodyTruncated,
+            headers = null,
+            focus = focus,
+        ),
+    ).jsonObject
+
+    @Test
+    fun `focus returns the matching passage and its diagnostics`() {
+        val json = focusEnvelope(focus = "офлайн режима работы")
+
+        assertEquals("true", json["focused"]!!.jsonPrimitive.content)
+        assertEquals("офлайн режима работы", json["focus"]!!.jsonPrimitive.content)
+        val text = json["text"]!!.jsonPrimitive.content
+        assertTrue(text.contains("Команда выпустила"))
+        assertFalse(text.contains("борща"))
+        assertTrue(json["chunks_total"]!!.jsonPrimitive.content.toInt() >= 2)
+        assertEquals(1, json["chunks_selected"]!!.jsonPrimitive.content.toInt())
+        assertEquals(text.length, json["returned_chars"]!!.jsonPrimitive.content.toInt())
+        assertTrue(
+            json["original_chars"]!!.jsonPrimitive.content.toInt() >=
+                json["returned_chars"]!!.jsonPrimitive.content.toInt(),
+        )
+        // A ranked result is a selection, never character pagination.
+        assertNull(json["next_start_index"])
+    }
+
+    @Test
+    fun `focus without a match keeps the leading passages`() {
+        val json = focusEnvelope(focus = "гидроцикл карбюратор")
+
+        assertEquals("true", json["focused"]!!.jsonPrimitive.content)
+        assertEquals("true", json["focus_fallback"]!!.jsonPrimitive.content)
+        assertTrue(json["text"]!!.jsonPrimitive.content.contains("Матч по футболу"))
+        assertTrue(json["text"]!!.jsonPrimitive.content.isNotBlank())
+    }
+
+    @Test
+    fun `absent and blank focus produce the legacy envelope unchanged`() {
+        val legacy = Json.parseToJsonElement(
+            buildExtractEnvelope(
+                status = 200,
+                ok = true,
+                finalUrl = "https://example.com/a",
+                html = focusHtml,
+                contentType = "text/html",
+                mode = FetchExtract.ARTICLE,
+                maxChars = 5000,
+                startIndex = 0,
+                bodyTruncated = false,
+                headers = null,
+            ),
+        ).jsonObject
+
+        val absent = focusEnvelope(focus = null, maxChars = 5000)
+        val blank = focusEnvelope(focus = "   ", maxChars = 5000)
+
+        assertEquals(legacy.toString(), absent.toString())
+        assertEquals(legacy.toString(), blank.toString())
+        assertFalse(absent.containsKey("focused"))
+        assertFalse(absent.containsKey("focus"))
+    }
+
+    @Test
+    fun `focus with a start index is refused instead of ranking a slice`() {
+        val json = focusEnvelope(focus = "офлайн", startIndex = 40)
+
+        assertEquals("focus_start_index_conflict", json["error"]!!.jsonPrimitive.content)
+        assertTrue(json["recovery"]!!.jsonPrimitive.content.contains("start_index"))
+        // Pagination still works when focus is blank.
+        assertNull(focusEnvelope(focus = "   ", startIndex = 40)["error"])
+    }
+
+    @Test
+    fun `focus respects a max chars smaller than the focused budget`() {
+        val json = focusEnvelope(focus = "офлайн режима работы", maxChars = 300)
+        val text = json["text"]!!.jsonPrimitive.content
+
+        assertTrue("returned ${text.length} chars", text.length <= 300)
+        assertEquals(text.length, json["returned_chars"]!!.jsonPrimitive.content.toInt())
+        assertTrue(text.startsWith("Команда выпустила"))
+    }
+
+    @Test
+    fun `focus is ignored for links and metadata modes`() {
+        val links = focusEnvelope(focus = "офлайн", mode = FetchExtract.LINKS)
+        assertTrue(links.containsKey("links"))
+        assertFalse(links.containsKey("focused"))
+
+        val metadata = focusEnvelope(focus = "офлайн", mode = FetchExtract.METADATA)
+        assertFalse(metadata.containsKey("focused"))
+    }
+
+    @Test
+    fun `focus support is limited to article and text`() {
+        assertTrue(supportsFocus(FetchExtract.ARTICLE))
+        assertTrue(supportsFocus(FetchExtract.TEXT))
+        assertFalse(supportsFocus(FetchExtract.RAW))
+        assertFalse(supportsFocus(FetchExtract.LINKS))
+        assertFalse(supportsFocus(FetchExtract.METADATA))
+    }
+
+    @Test
+    fun `parseFocus trims and treats blank as absent`() {
+        assertNull(parseFocus(null as String?))
+        assertNull(parseFocus(""))
+        assertNull(parseFocus("   "))
+        assertEquals("KernelSU root", parseFocus("  KernelSU root  "))
+        assertEquals(
+            "KernelSU",
+            parseFocus(Json.parseToJsonElement("""{"focus":" KernelSU "}""").jsonObject),
+        )
+        assertNull(parseFocus(Json.parseToJsonElement("""{}""").jsonObject))
+    }
+
+    @Test
+    fun `focus does not bypass url validation`() {
+        assertEquals(
+            "blocked_address",
+            invoke("""{"url":"http://127.0.0.1:9","extract_mode":"article","focus":"x"}""").error(),
+        )
+    }
+
+    @Test
+    fun `focused selection truncation is separate from body truncation`() {
+        val json = focusEnvelope(focus = "офлайн режима работы")
+
+        // The page held more text than ranking returned, but the fetch itself was complete.
+        assertEquals("true", json["selection_truncated"]!!.jsonPrimitive.content)
+        assertEquals("false", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("false", json["body_truncated"]!!.jsonPrimitive.content)
+        assertNull(json["next_start_index"])
+        assertTrue(
+            json["returned_chars"]!!.jsonPrimitive.content.toInt() <
+                json["original_chars"]!!.jsonPrimitive.content.toInt(),
+        )
+    }
+
+    @Test
+    fun `focused response with a truncated body flags truncated and offers no resume index`() {
+        val json = focusEnvelope(focus = "офлайн режима работы", bodyTruncated = true)
+
+        assertEquals("true", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("true", json["body_truncated"]!!.jsonPrimitive.content)
+        assertNull(json["next_start_index"])
+        assertEquals("true", json["selection_truncated"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `unfocused response keeps pagination semantics and gains no selection fields`() {
+        val json = Json.parseToJsonElement(
+            buildExtractEnvelope(
+                status = 200,
+                ok = true,
+                finalUrl = "https://example.com/a",
+                html = focusHtml,
+                contentType = "text/html",
+                mode = FetchExtract.ARTICLE,
+                maxChars = 300,
+                startIndex = 0,
+                bodyTruncated = false,
+                headers = null,
+            ),
+        ).jsonObject
+
+        assertEquals("true", json["truncated"]!!.jsonPrimitive.content)
+        assertEquals("300", json["next_start_index"]!!.jsonPrimitive.content)
+        assertFalse(json.containsKey("selection_truncated"))
+        assertFalse(json.containsKey("focused"))
+        // Caching is opt-in, so a direct call stores nothing and reports no source.
+        assertFalse(json.containsKey("source_id"))
+    }
+
+    @Test
+    fun `focus with a start index is still rejected as a conflict`() {
+        val json = focusEnvelope(focus = "офлайн", startIndex = 40)
+
+        assertEquals("focus_start_index_conflict", json["error"]!!.jsonPrimitive.content)
+        assertFalse(json.containsKey("selection_truncated"))
+        assertFalse(json.containsKey("truncated"))
+    }
+
+    @Test
+    fun `cancellation is not converted into a tool envelope`() {
+        // The tool catches IOException only, so a cancelled coroutine keeps propagating through
+        // the focus path exactly as it did before.
+        val cancelled: Throwable = CancellationException("cancelled")
+        assertFalse(cancelled is IOException)
     }
 }

@@ -15,6 +15,7 @@ import me.rerere.rikkahub.data.ai.tools.local.RenderedPage
 import me.rerere.rikkahub.data.ai.tools.local.RenderedPageReader
 import me.rerere.rikkahub.data.ai.tools.local.RenderedRead
 import me.rerere.rikkahub.data.ai.tools.local.RenderedScope
+import me.rerere.rikkahub.browser.ReadabilityRunner.runReadability
 
 /**
  * Reads the currently rendered page out of the live WebView for the web research engine.

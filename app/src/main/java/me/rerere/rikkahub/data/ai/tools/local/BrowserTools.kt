@@ -383,7 +383,7 @@ fun browserScreenshotTool(context: Context): Tool = Tool(
     },
 )
 
-fun browserGetTextTool(
+internal fun browserGetTextTool(
     reader: RenderedPageReader = WebViewPageReader,
 ): Tool = Tool(
     name = BrowserToolDefaults.GET_TEXT,

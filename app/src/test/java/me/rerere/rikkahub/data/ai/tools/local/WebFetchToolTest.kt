@@ -36,12 +36,12 @@ class WebFetchToolTest {
 
     private fun JsonObject.error() = this["error"]?.jsonPrimitive?.content
 
-    @Test fun `missing url is rejected`() {
-        assertEquals("missing_url", invoke("""{}""").error())
+    @Test fun `missing url and source id is rejected`() {
+        assertEquals("missing_source", invoke("""{}""").error())
     }
 
     @Test fun `blank url is rejected`() {
-        assertEquals("missing_url", invoke("""{"url":"   "}""").error())
+        assertEquals("missing_source", invoke("""{"url":"   "}""").error())
     }
 
     @Test fun `non-http url is rejected`() {
@@ -370,6 +370,8 @@ class WebFetchToolTest {
         assertEquals("300", json["next_start_index"]!!.jsonPrimitive.content)
         assertFalse(json.containsKey("selection_truncated"))
         assertFalse(json.containsKey("focused"))
+        // Caching is opt-in, so a direct call stores nothing and reports no source.
+        assertFalse(json.containsKey("source_id"))
     }
 
     @Test

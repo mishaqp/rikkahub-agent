@@ -33,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.ModelType
@@ -79,6 +80,10 @@ fun ProviderConnectionTester(
             streamingText = ""
         }
 
+        val testRunning = nonStreamingState is UiState.Loading ||
+            streamingState is UiState.Loading ||
+            toolsState is UiState.Loading
+
         AlertDialog(
             onDismissRequest = { showTestDialog = false },
             title = {
@@ -121,35 +126,52 @@ fun ProviderConnectionTester(
             },
             confirmButton = {
                 TextButton(
+                    enabled = model != null && !testRunning,
                     onClick = {
-                        if (model == null) return@TextButton
+                        val selectedModel = model ?: return@TextButton
                         val provider = providerManager.getProviderByType(internalProvider)
                         resetStates()
                         scope.launch {
-                            launch {
-                                runCatching {
-                                    nonStreamingState = UiState.Loading
-                                    val result = provider.generateText(
+                            // Run the checks sequentially. Three simultaneous generations can
+                            // trip rate/capacity limits on gateway-backed models and makes a
+                            // healthy provider look broken in this diagnostic dialog.
+                            nonStreamingState = UiState.Loading
+                            try {
+                                val result = retryProviderConnectionTest {
+                                    provider.generateText(
                                         providerSetting = internalProvider,
                                         messages = listOf(
                                             UIMessage.system("You are a helpful assistant"),
                                             UIMessage.user("hello"),
                                         ),
                                         params = TextGenerationParams(
-                                            model = model!!,
-                                            customHeaders = model!!.customHeaders,
-                                            customBody = model!!.customBodies
+                                            model = selectedModel,
+                                            customHeaders = selectedModel.customHeaders,
+                                            customBody = selectedModel.customBodies
                                         )
                                     )
-                                    val text = result.message.parts
-                                        .filterIsInstance<UIMessagePart.Text>()
-                                        .joinToString("") { it.text }
-                                    nonStreamingState = UiState.Success(text)
-                                }.onFailure { nonStreamingState = UiState.Error(it) }
+                                }
+                                val text = result.message.parts
+                                    .filterIsInstance<UIMessagePart.Text>()
+                                    .joinToString("") { it.text }
+                                nonStreamingState = UiState.Success(text)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                nonStreamingState = UiState.Error(failure)
                             }
-                            launch {
-                                runCatching {
-                                    streamingState = UiState.Loading
+
+                            streamingState = UiState.Loading
+                            try {
+                                var attemptReceivedOutput = false
+                                retryProviderConnectionTest(
+                                    shouldRetry = { failure ->
+                                        !attemptReceivedOutput &&
+                                            isRetryableProviderConnectionFailure(failure)
+                                    },
+                                    onRetry = { _, _ -> streamingText = "" },
+                                ) {
+                                    attemptReceivedOutput = false
                                     val flow = provider.streamText(
                                         providerSetting = internalProvider,
                                         messages = listOf(
@@ -157,61 +179,71 @@ fun ProviderConnectionTester(
                                             UIMessage.user("hello"),
                                         ),
                                         params = TextGenerationParams(
-                                            model = model!!,
-                                            customHeaders = model!!.customHeaders,
-                                            customBody = model!!.customBodies
+                                            model = selectedModel,
+                                            customHeaders = selectedModel.customHeaders,
+                                            customBody = selectedModel.customBodies
                                         )
                                     )
                                     flow.collect { chunk ->
                                         if (chunk is StreamChunk.TextDelta) {
+                                            attemptReceivedOutput = true
                                             streamingText += chunk.text
                                         }
                                     }
-                                    streamingState = UiState.Success("")
-                                }.onFailure { streamingState = UiState.Error(it) }
+                                }
+                                streamingState = UiState.Success("")
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                streamingState = UiState.Error(failure)
                             }
-                            launch {
-                                runCatching {
-                                    toolsState = UiState.Loading
-                                    val testTool = Tool(
-                                        name = "get_current_time",
-                                        description = "Get the current date and time.",
-                                        execute = { emptyList() }
-                                    )
-                                    val result = provider.generateText(
+
+                            toolsState = UiState.Loading
+                            try {
+                                val testTool = Tool(
+                                    name = "get_current_time",
+                                    description = "Get the current date and time.",
+                                    execute = { emptyList() }
+                                )
+                                val result = retryProviderConnectionTest {
+                                    provider.generateText(
                                         providerSetting = internalProvider,
                                         messages = listOf(
                                             UIMessage.system("You are a helpful assistant"),
                                             UIMessage.user("Use the get_current_time tool."),
                                         ),
                                         params = TextGenerationParams(
-                                            model = model!!,
+                                            model = selectedModel,
                                             tools = listOf(testTool),
-                                            customHeaders = model!!.customHeaders,
-                                            customBody = model!!.customBodies
+                                            customHeaders = selectedModel.customHeaders,
+                                            customBody = selectedModel.customBodies
                                         )
                                     )
-                                    val message = result.message
-                                    val toolCall = message.parts
-                                        .filterIsInstance<UIMessagePart.Tool>()
-                                        .firstOrNull()
-                                    val resultText = if (toolCall != null) {
-                                        context.getString(
-                                            R.string.setting_provider_page_test_tool_called,
-                                            toolCall.toolName,
-                                            toolCall.input
-                                        )
-                                    } else {
-                                        val text = message.parts
-                                            .filterIsInstance<UIMessagePart.Text>()
-                                            .joinToString("") { it.text }
-                                        context.getString(
-                                            R.string.setting_provider_page_test_tool_not_called,
-                                            text
-                                        )
-                                    }
-                                    toolsState = UiState.Success(resultText)
-                                }.onFailure { toolsState = UiState.Error(it) }
+                                }
+                                val message = result.message
+                                val toolCall = message.parts
+                                    .filterIsInstance<UIMessagePart.Tool>()
+                                    .firstOrNull()
+                                val resultText = if (toolCall != null) {
+                                    context.getString(
+                                        R.string.setting_provider_page_test_tool_called,
+                                        toolCall.toolName,
+                                        toolCall.input
+                                    )
+                                } else {
+                                    val text = message.parts
+                                        .filterIsInstance<UIMessagePart.Text>()
+                                        .joinToString("") { it.text }
+                                    context.getString(
+                                        R.string.setting_provider_page_test_tool_not_called,
+                                        text
+                                    )
+                                }
+                                toolsState = UiState.Success(resultText)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                toolsState = UiState.Error(failure)
                             }
                         }
                     }

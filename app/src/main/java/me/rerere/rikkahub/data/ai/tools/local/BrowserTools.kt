@@ -28,6 +28,7 @@ import me.rerere.rikkahub.browser.BrowserController
 import me.rerere.rikkahub.browser.BrowserControllerHandle
 import me.rerere.rikkahub.browser.BrowserDiffHelper
 import me.rerere.rikkahub.browser.BrowserToolDefaults
+import me.rerere.rikkahub.browser.WebViewPageReader
 import me.rerere.rikkahub.browser.HeadlessBrowserSessionPool
 import me.rerere.rikkahub.browser.ReadabilityRunner.runReadability
 import me.rerere.rikkahub.browser.awaitReadyState
@@ -382,11 +383,13 @@ fun browserScreenshotTool(context: Context): Tool = Tool(
     },
 )
 
-fun browserGetTextTool(): Tool = Tool(
+fun browserGetTextTool(
+    reader: RenderedPageReader = WebViewPageReader,
+): Tool = Tool(
     name = BrowserToolDefaults.GET_TEXT,
-    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping — selectors override Readability. max_chars (default 8000) caps the result. Use this BEFORE screenshot if you only need text content. {text, truncated, extract_mode}.$TELEGRAM_HEADLESS_CUE",
+    description = "Returns the main article content via Readability.js by default, falling back to selector-based extraction if Readability fails. Pass extract_mode:'raw' for the unfiltered text. Pass selector (e.g. 'article', 'main', '.content') for explicit scoping - selectors override Readability. max_chars (default 8000) caps the result. focus ranks the whole rendered page and returns only the most relevant passages (chunks_selected, selection_truncated) instead of the whole text, and the answer carries a source_id: re-ask about the same page with web_extract(source_id=..., focus=...) rather than reading the WebView again, and never combine focus with selector. Use this BEFORE screenshot if you only need text content, and prefer web_fetch/web_extract for public pages that need no interaction - this tool never opens a browser by itself. {text, truncated, extract_mode, current_url, source_id}.$TELEGRAM_HEADLESS_CUE",
     parameters = { getTextSchema(defaultMax = 8000) },
-    execute = { input -> textPart(runGetText(input)) },
+    execute = { input -> textPart(runGetText(input, reader)) },
 )
 
 fun browserGetDomTool(): Tool = Tool(
@@ -1220,6 +1223,10 @@ private fun getTextSchema(defaultMax: Int): InputSchema = InputSchema.Obj(
             put("enum", buildJsonArray { add("auto"); add("readability"); add("raw") })
             put("description", "auto (default) tries Readability then falls back; readability forces it; raw uses selector-based innerText")
         })
+        put("focus", buildJsonObject {
+            put("type", "string")
+            put("description", "Optional query that ranks the whole rendered page and returns only the most relevant passages, plus a source_id re-readable via web_extract")
+        })
     },
 )
 
@@ -1324,92 +1331,25 @@ private suspend fun runReadHelper(
 }
 
 /**
- * Token-cost optimisation pass — browser_get_text body. Resolves [extract_mode] +
- * [selector] precedence:
- *  - Explicit `selector` arg → skip Readability and use selector-based innerText
- *    (the user knows what they want; we trust the model).
- *  - `extract_mode = "raw"` → selector-based innerText against `body` (current
- *    pre-pass behaviour).
- *  - `extract_mode = "readability"` → force Readability; surface
- *    `{error:"readability_failed"}` if it returns null.
- *  - `extract_mode = "auto"` (default) → try Readability; fall back to
- *    selector-based innerText if it returns null OR less than 200 chars (a
- *    too-short article is often a junk extraction — better to fall back).
+ * Below this a Readability extraction counts as junk and the visible body text is used instead
+ * ([WebViewPageReader] applies it for browser_get_text; the click-and-read path shares it).
  */
 private const val READABILITY_MIN_CHARS = 200
 
-private suspend fun runGetText(input: kotlinx.serialization.json.JsonElement): JsonObject {
-    val explicitSelector = input.jsonObject["selector"]?.jsonPrimitive?.contentOrNull
-        ?.takeIf { it.isNotBlank() }
-    val maxChars = (input.jsonObject["max_chars"]?.jsonPrimitive?.intOrNull ?: 8000)
-        .coerceIn(100, 64 * 1024)
-    val mode = input.jsonObject["extract_mode"]?.jsonPrimitive?.contentOrNull?.lowercase()
-        ?.takeIf { it in setOf("auto", "readability", "raw") } ?: "auto"
-
-    return withTimeoutOrNull(toolTimeoutMs) {
-        BrowserControllerHandle.withController {
-            // Selector arg trumps everything — the model is being explicit, honour it.
-            if (explicitSelector != null) {
-                return@withController runRawText(explicitSelector, maxChars, mode = "raw_selector")
-            }
-            when (mode) {
-                "raw" -> runRawText("body", maxChars, mode = "raw")
-                "readability" -> {
-                    val text = webView.runReadability()
-                    if (text.isNullOrEmpty()) {
-                        buildJsonObject {
-                            put("error", "readability_failed")
-                            put("recovery", "Try extract_mode:'auto' or pass a specific selector")
-                        }
-                    } else {
-                        buildJsonObject {
-                            val (clipped, truncated) = clipText(text, maxChars)
-                            put("text", clipped)
-                            put("truncated", truncated)
-                            put("extract_mode", "readability")
-                        }
-                    }
-                }
-                else -> {
-                    // auto: Readability first, then selector fallback
-                    val text = webView.runReadability()
-                    if (!text.isNullOrEmpty() && text.length >= READABILITY_MIN_CHARS) {
-                        val (clipped, truncated) = clipText(text, maxChars)
-                        buildJsonObject {
-                            put("text", clipped)
-                            put("truncated", truncated)
-                            put("extract_mode", "readability")
-                        }
-                    } else {
-                        runRawText("body", maxChars, mode = "raw_fallback")
-                    }
-                }
-            }
-        }
-    } ?: timeoutEnvelope(BrowserToolDefaults.GET_TEXT)
-}
-
-private suspend fun BrowserControllerHandle.WithControllerScope.runRawText(
-    selector: String,
-    maxChars: Int,
-    mode: String,
-): JsonObject {
-    val js = """(function(){
-        try {
-            var el = document.querySelector(${jsString(selector)});
-            if (!el) return JSON.stringify({error:'selector_not_found', selector:${jsString(selector)}});
-            var t = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
-            var truncated = false;
-            if (t.length > $maxChars) { t = t.substring(0, $maxChars); truncated = true; }
-            return JSON.stringify({text:t, truncated:truncated});
-        } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
-    })()"""
-    val res = parseJsResult(webView.evaluateJavascriptAsync(js))
-    return if (res.containsKey("error")) res else buildJsonObject {
-        res.forEach { (k, v) -> put(k, v) }
-        put("extract_mode", mode)
-    }
-}
+/**
+ * browser_get_text: argument handling, the page read, ranking and the envelope all live in
+ * [runBrowserTextRead], which is free of Android types so the behaviour is unit-testable. This
+ * wrapper only supplies the live-WebView reader and the not-open envelope.
+ */
+private suspend fun runGetText(
+    input: kotlinx.serialization.json.JsonElement,
+    reader: RenderedPageReader,
+): JsonObject = runBrowserTextRead(
+    input = input,
+    reader = reader,
+    timeoutMs = toolTimeoutMs,
+    notOpen = { BrowserController.notOpenEnvelope() },
+)
 
 private fun clipText(text: String, maxChars: Int): Pair<String, Boolean> =
     if (text.length <= maxChars) text to false

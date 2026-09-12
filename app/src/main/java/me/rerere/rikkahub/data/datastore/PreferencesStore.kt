@@ -115,6 +115,64 @@ private fun decodeProvidersTolerant(raw: String): List<ProviderSetting> {
 private fun dropDeniedGeminiOAuthModels(models: List<Model>): List<Model> =
     models.distinctBy { model -> model.id }.filterNot { model -> model.modelId in DENIED_MODEL_IDS }
 
+/**
+ * Reconcile persisted providers with the current built-in catalog without touching user state.
+ *
+ * A stable provider ID is the migration key: a newly shipped remote provider is appended once,
+ * while a provider already present at that ID keeps its position, API key, enabled state, models,
+ * and endpoint overrides. A user-created provider with the same display name has a different ID
+ * and therefore remains a separate row. Explicitly deleted built-ins stay deleted.
+ *
+ * Kept as a pure function so upgrade and ordering behaviour can be regression-tested without an
+ * Android DataStore.
+ */
+internal fun reconcileBuiltInProviders(
+    persistedProviders: List<ProviderSetting>,
+    deletedDefaultIds: Set<Uuid>,
+    defaults: List<ProviderSetting> = DEFAULT_PROVIDERS,
+): List<ProviderSetting> {
+    val providers = persistedProviders.ifEmpty {
+        defaults.filter { provider -> provider.id !in deletedDefaultIds }
+    }.toMutableList()
+
+    // For existing installs that pre-date the on-device AICore provider being promoted to
+    // first-place, hoist it to the top. Remote providers are never moved during reconciliation.
+    val aicoreIndex = providers.indexOfFirst { it is ProviderSetting.AICore }
+    if (aicoreIndex > 0) {
+        val aicoreRow = providers.removeAt(aicoreIndex)
+        providers.add(0, aicoreRow)
+    }
+
+    defaults.forEach { defaultProvider ->
+        if (defaultProvider.id in deletedDefaultIds) return@forEach
+        if (providers.none { it.id == defaultProvider.id }) {
+            // On-device built-ins are pinned to the top in catalog order. Newly introduced remote
+            // providers append, preserving every existing user-defined order.
+            when (defaultProvider) {
+                is ProviderSetting.AICore -> providers.add(0, defaultProvider.copyProvider())
+                is ProviderSetting.LiteRtLocal -> {
+                    val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
+                    providers.add(insertAt, defaultProvider.copyProvider())
+                }
+                else -> providers.add(defaultProvider.copyProvider())
+            }
+        }
+    }
+
+    return providers.map { provider ->
+        val defaultProvider = defaults.find { it.id == provider.id }
+        if (defaultProvider != null) {
+            provider.copyProvider(
+                builtIn = defaultProvider.builtIn,
+                description = defaultProvider.description,
+                shortDescription = defaultProvider.shortDescription,
+            )
+        } else {
+            provider
+        }
+    }
+}
+
 private val Context.settingsStore by preferencesDataStore(
     name = "settings",
     produceMigrations = { context ->
@@ -522,46 +580,10 @@ class SettingsStore(
         }
         .map {
             val deletedDefaultIds = it.deletedBuiltInProviderIds
-            var providers = it.providers.ifEmpty {
-                DEFAULT_PROVIDERS.filter { p -> p.id !in deletedDefaultIds }
-            }.toMutableList()
-            // For existing installs that pre-date the on-device AICore provider being
-            // promoted to first-place, hoist it to the top so the user does not have to
-            // scroll past every legacy aggregator to find it.
-            val aicoreIndex = providers.indexOfFirst { it is ProviderSetting.AICore }
-            if (aicoreIndex > 0) {
-                val aicoreRow = providers.removeAt(aicoreIndex)
-                providers.add(0, aicoreRow)
-            }
-            DEFAULT_PROVIDERS.forEach { defaultProvider ->
-                if (defaultProvider.id in deletedDefaultIds) return@forEach
-                if (providers.none { it.id == defaultProvider.id }) {
-                    // On-device built-in providers (AICore, LiteRT) are pinned to the top of
-                    // the list in the order they appear in DEFAULT_PROVIDERS. Remote provider
-                    // defaults continue to append at the end so existing users see no
-                    // reordering of their configured remote providers.
-                    when (defaultProvider) {
-                        is ProviderSetting.AICore -> providers.add(0, defaultProvider.copyProvider())
-                        is ProviderSetting.LiteRtLocal -> {
-                            // Insert right after AICore, or at 0 if AICore is absent.
-                            // indexOfFirst returns -1 when absent; -1 + 1 = 0, so insert at 0.
-                            val insertAt = providers.indexOfFirst { it is ProviderSetting.AICore } + 1
-                            providers.add(insertAt, defaultProvider.copyProvider())
-                        }
-                        else -> providers.add(defaultProvider.copyProvider())
-                    }
-                }
-            }
-            providers = providers.map { provider ->
-                val defaultProvider = DEFAULT_PROVIDERS.find { it.id == provider.id }
-                if (defaultProvider != null) {
-                    provider.copyProvider(
-                        builtIn = defaultProvider.builtIn,
-                        description = defaultProvider.description,
-                        shortDescription = defaultProvider.shortDescription,
-                    )
-                } else provider
-            }.toMutableList()
+            val providers = reconcileBuiltInProviders(
+                persistedProviders = it.providers,
+                deletedDefaultIds = deletedDefaultIds,
+            )
             var assistants = it.assistants.ifEmpty { DEFAULT_ASSISTANTS }.toMutableList()
             DEFAULT_ASSISTANTS.forEach { defaultAssistant ->
                 if (assistants.none { it.id == defaultAssistant.id }) {

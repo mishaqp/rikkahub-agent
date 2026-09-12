@@ -116,4 +116,49 @@ class WebExtractorTest {
         val page = WebExtractor.extract("", "https://example.com/p", ExtractMode.ARTICLE, 10_000, 0)
         assertEquals("", page.text)
     }
+
+    // --- extractFullText: the un-windowed API focused ranking relies on ---------------------
+
+    @Test
+    fun `extractFullText returns the whole body without windowing`() {
+        val page = WebExtractor.extractFullText(articleHtml, "https://example.com/p", ExtractMode.ARTICLE)
+
+        assertTrue(page.text.contains("First paragraph"))
+        assertTrue(page.text.contains("Second paragraph"))
+        assertFalse(page.truncated)
+        assertNull(page.nextStartIndex)
+    }
+
+    @Test
+    fun `extractFullText keeps content that sits past the old window`() {
+        val filler = "Заполняющий абзац с достаточно длинным текстом для проверки границ окна. ".repeat(14)
+        val marker = "Уникальный маркер в самом конце документа про гидроциклы."
+        val html = "<html><body><article>" +
+            (1..60).joinToString("") { "<p>$filler абзац $it</p>" } +
+            "<p>$marker</p></article></body></html>"
+
+        val full = WebExtractor.extractFullText(html, "https://example.com/p", ExtractMode.ARTICLE)
+        val beyond = full.text.indexOf("Уникальный маркер")
+        assertTrue("marker should sit past the old 32K window but was at $beyond", beyond > 32_768)
+
+        // The focused pass ranks that full text, so the tail is reachable.
+        val focused = QueryFocusedExtractor.focus(full.text, "гидроциклы", charBudget = 4096)
+        assertTrue(focused.text.contains("Уникальный маркер"))
+    }
+
+    @Test
+    fun `extractFullText supports links and metadata modes`() {
+        val links = WebExtractor.extractFullText(articleHtml, "https://example.com/p", ExtractMode.LINKS)
+        assertTrue(links.links.any { it.href == "https://example.com/a" })
+
+        val meta = WebExtractor.extractFullText(articleHtml, "https://example.com/p", ExtractMode.METADATA)
+        assertEquals("Real Title", meta.title)
+        assertEquals("", meta.text)
+    }
+
+    @Test
+    fun `extractFullText on blank html is empty`() {
+        val page = WebExtractor.extractFullText("", "https://example.com/p", ExtractMode.ARTICLE)
+        assertEquals("", page.text)
+    }
 }

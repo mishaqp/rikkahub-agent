@@ -71,7 +71,7 @@ internal object WebViewPageReader : RenderedPageReader {
             )
         }
 
-        when (request.mode) {
+        val page = when (request.mode) {
             "readability" -> {
                 val article = webView.runReadability()
                 if (article.isNullOrEmpty()) {
@@ -80,28 +80,55 @@ internal object WebViewPageReader : RenderedPageReader {
                         recovery = "Try extract_mode:'auto' or pass a specific selector",
                     )
                 }
-                return RenderedRead.Ok(pageFrom(url, title, article, MODE_READABILITY))
+                pageFrom(url, title, article, MODE_READABILITY)
             }
-            "raw" -> Unit // fall through to the visible-text read below
+            "raw" -> {
+                val element = readElement(webView, "body")
+                element.error?.let { return RenderedRead.Failure(it, element.detail) }
+                RenderedPage(
+                    url = url,
+                    title = title,
+                    text = element.text,
+                    extractMode = "raw",
+                    scope = RenderedScope.FULL_PAGE,
+                    readTruncated = element.truncated,
+                )
+            }
             else -> {
                 val article = webView.runReadability()
                 if (!article.isNullOrEmpty() && article.length >= READABILITY_MIN_CHARS) {
-                    return RenderedRead.Ok(pageFrom(url, title, article, MODE_READABILITY))
+                    pageFrom(url, title, article, MODE_READABILITY)
+                } else {
+                    val element = readElement(webView, "body")
+                    element.error?.let { return RenderedRead.Failure(it, element.detail) }
+                    RenderedPage(
+                        url = url,
+                        title = title,
+                        text = element.text,
+                        extractMode = "raw_fallback",
+                        scope = RenderedScope.FULL_PAGE,
+                        readTruncated = element.truncated,
+                    )
                 }
             }
         }
 
-        val element = readElement(webView, "body")
-        element.error?.let { return RenderedRead.Failure(it, element.detail) }
-        return RenderedRead.Ok(
-            RenderedPage(
-                url = url,
-                title = title,
-                text = element.text,
-                extractMode = if (request.mode == "raw") "raw" else "raw_fallback",
-                scope = RenderedScope.FULL_PAGE,
-                readTruncated = element.truncated,
-            ),
+        return RenderedRead.Ok(attachResearchCorpus(webView, page))
+    }
+
+    /**
+     * Add a research-only corpus without changing the visible/Readability answer. If the semantic
+     * extraction fails or is shorter than the existing text, keeping the old corpus guarantees
+     * that this enrichment can never reduce what ranking and source reuse used to see.
+     */
+    private suspend fun attachResearchCorpus(webView: WebView, page: RenderedPage): RenderedPage {
+        val research = readResearchCorpus(webView)
+        if (research.error != null || research.text.isBlank() || research.text.length < page.text.length) {
+            return page
+        }
+        return page.copy(
+            researchText = research.text,
+            researchTruncated = research.truncated,
         )
     }
 
@@ -125,8 +152,8 @@ internal object WebViewPageReader : RenderedPageReader {
      * `innerText` is the rendered text: script, style and hidden nodes are excluded by the engine
      * itself, and form values never appear because they are attributes, not text. The result is
      * bounded by [BROWSER_RESEARCH_MAX_CHARS] before it crosses the bridge; the caller applies its
-     * own, smaller `max_chars` window afterwards. Paragraph breaks are preserved - ranking needs
-     * them to chunk the page.
+     * own, smaller `max_chars` window afterwards. Paragraph breaks are preserved for the legacy
+     * answer and for the fallback research corpus.
      */
     private suspend fun readElement(webView: WebView, selector: String): ElementRead {
         val cap = BROWSER_RESEARCH_MAX_CHARS
@@ -144,6 +171,108 @@ internal object WebViewPageReader : RenderedPageReader {
             } catch(e) { return JSON.stringify({error:'js_failed', detail: String(e)}); }
         })()"""
 
+        return evaluateTextRead(webView, js)
+    }
+
+    /**
+     * Build a research corpus from semantic page content already present in the DOM.
+     *
+     * Unlike `innerText`, this traversal includes sections collapsed only by a stylesheet (the
+     * mobile Wikipedia/Minerva case). It does not inspect computed styles or attributes beyond
+     * visibility markers, and it never serialises DOM or form values. Executable, embedded,
+     * navigation, form and explicitly hidden subtrees are skipped before text crosses the bridge.
+     */
+    private suspend fun readResearchCorpus(webView: WebView): ElementRead {
+        val cap = BROWSER_RESEARCH_MAX_CHARS
+        val js = """(function(){
+            try {
+                var root = document.querySelector('main') ||
+                    document.querySelector('[role="main"]') ||
+                    document.querySelector('article') ||
+                    document.body ||
+                    document.documentElement;
+                if (!root) return JSON.stringify({error:'research_root_not_found'});
+
+                var clone = root.cloneNode(true);
+                var forbiddenTags = {
+                    SCRIPT:1, STYLE:1, NOSCRIPT:1, TEMPLATE:1, IFRAME:1, SVG:1, CANVAS:1,
+                    FORM:1, INPUT:1, TEXTAREA:1, SELECT:1, OPTION:1, BUTTON:1, DATALIST:1,
+                    OBJECT:1, EMBED:1, APPLET:1, AUDIO:1, VIDEO:1, PICTURE:1, MAP:1, AREA:1,
+                    NAV:1, ASIDE:1, DIALOG:1
+                };
+                var forbiddenRoles = {
+                    navigation:1, dialog:1, alert:1, alertdialog:1, menu:1, menubar:1,
+                    toolbar:1, search:1, complementary:1, banner:1, contentinfo:1
+                };
+                var blockTags = {
+                    ADDRESS:1, ARTICLE:1, BLOCKQUOTE:1, DD:1, DIV:1, DL:1, DT:1,
+                    FIGCAPTION:1, FIGURE:1, H1:1, H2:1, H3:1, H4:1, H5:1, H6:1,
+                    HR:1, LI:1, MAIN:1, OL:1, P:1, PRE:1, SECTION:1, TABLE:1,
+                    TBODY:1, TD:1, TFOOT:1, TH:1, THEAD:1, TR:1, UL:1
+                };
+                var pieces = [];
+                var remaining = ($cap * 4) + 1;
+                var stopped = false;
+
+                function appendValue(value) {
+                    if (!value) return;
+                    if (remaining <= 0) { stopped = true; return; }
+                    if (value.length > remaining) {
+                        pieces.push(value.substring(0, remaining));
+                        remaining = 0;
+                        stopped = true;
+                    } else {
+                        pieces.push(value);
+                        remaining -= value.length;
+                    }
+                }
+
+                function visit(node) {
+                    if (stopped || !node) return;
+                    if (node.nodeType === 3) {
+                        appendValue(node.nodeValue || '');
+                        return;
+                    }
+                    if (node.nodeType !== 1) return;
+
+                    var tag = node.tagName || '';
+                    if (forbiddenTags[tag]) return;
+                    var ariaHidden = (node.getAttribute('aria-hidden') || '').trim().toLowerCase();
+                    if (node.hidden || node.hasAttribute('inert') || ariaHidden === 'true') return;
+                    var role = (node.getAttribute('role') || '').trim().toLowerCase();
+                    if (forbiddenRoles[role]) return;
+                    var styleText = (node.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+                    if (styleText.indexOf('display:none') >= 0 ||
+                        styleText.indexOf('visibility:hidden') >= 0) return;
+
+                    if (tag === 'BR') {
+                        appendValue('\n');
+                        return;
+                    }
+                    var block = !!blockTags[tag];
+                    if (block) appendValue('\n\n');
+                    for (var child = node.firstChild; child; child = child.nextSibling) visit(child);
+                    if (block) appendValue('\n\n');
+                }
+
+                visit(clone);
+                var text = pieces.join('')
+                    .replace(/\r\n?/g, '\n')
+                    .replace(/[ \t\u00a0\u2000-\u200d\ufeff]+/g, ' ')
+                    .replace(/ *\n */g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .trim();
+                var truncated = stopped || text.length > $cap;
+                if (text.length > $cap) text = text.substring(0, $cap);
+                return JSON.stringify({text:text, truncated:truncated});
+            } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
+        })()"""
+
+        return evaluateTextRead(webView, js)
+    }
+
+    /** Decode one bounded text result returned by the JavaScript bridge. */
+    private suspend fun evaluateTextRead(webView: WebView, js: String): ElementRead {
         val raw = webView.evaluateJavascriptAsync(js) ?: return ElementRead(error = "js_failed")
         return runCatching {
             val outer = Json.parseToJsonElement(raw)

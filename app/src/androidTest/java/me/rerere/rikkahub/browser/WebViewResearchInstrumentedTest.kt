@@ -61,6 +61,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * only exists on a device:
  *
  *  * `innerText` really excludes script / style / `hidden` / non-rendered content;
+ *  * a safe semantic corpus still reaches article sections collapsed only by page CSS;
  *  * `Readability.js` really loads from `assets/browser/readability.js` and parses a live DOM;
  *  * a selector with quotes, a backslash and non-ASCII characters survives the JS splice;
  *  * a snapshot really publishes a `source_id` that `web_extract` can re-read after the WebView is
@@ -154,6 +155,67 @@ class WebViewResearchInstrumentedTest {
         assertFalse("hidden content must never be read", text.contains(HIDDEN_SENTINEL))
         assertFalse("input values must never be read", text.contains(PASSWORD_SENTINEL))
         assertFalse("residual markup must not reach the answer", text.contains("<"))
+    }
+
+    @Test
+    fun cssCollapsedSemanticSectionsFeedBrowserFocusAndCachedReuse() {
+        val (visible, focused) = withBoundPage(collapsedArticlePageHtml()) {
+            val visibleRead = readText(buildJsonObject {
+                put("extract_mode", JsonPrimitive("raw"))
+                put("max_chars", JsonPrimitive(8000))
+            })
+            val focusedRead = readText(buildJsonObject {
+                put("extract_mode", JsonPrimitive("raw"))
+                put("focus", JsonPrimitive(COLLAPSED_DEEP_MARKER))
+                put("max_chars", JsonPrimitive(4000))
+            })
+            visibleRead to focusedRead
+        }
+
+        assertTrue(visible.str("text").orEmpty().contains(COLLAPSED_VISIBLE_MARKER))
+        assertFalse(
+            "raw keeps the legacy rendered answer; CSS-collapsed prose must stay out of it",
+            visible.str("text").orEmpty().contains(COLLAPSED_DEEP_MARKER),
+        )
+        assertEquals("true", focused.str("focused"))
+        assertNull("the deep marker must be selected, not returned by fallback", focused.str("focus_fallback"))
+        assertTrue(
+            "browser focus must reach the CSS-collapsed section; envelope: $focused",
+            focused.str("text").orEmpty().contains(COLLAPSED_DEEP_MARKER),
+        )
+        assertTrue(
+            "the research corpus must extend past the old visible slice; envelope: $focused",
+            focused.int("original_chars") > 32 * 1024,
+        )
+
+        val sourceId = visible.str("source_id")
+        assertNotNull("the raw full-page read must publish a source_id", sourceId)
+        val cached = webSourceCache.get(sourceId!!)
+        assertNotNull("the browser research corpus must be cached", cached)
+        assertTrue(cached!!.text.contains(COLLAPSED_DEEP_MARKER))
+        assertTrue("the cached corpus must include the deep section", cached.text.length > 32 * 1024)
+        for (leak in listOf(
+            SCRIPT_SENTINEL,
+            STYLE_SENTINEL,
+            DISPLAY_NONE_SENTINEL,
+            HIDDEN_SENTINEL,
+            PASSWORD_SENTINEL,
+        )) {
+            assertFalse("$leak leaked into the research source", cached.text.contains(leak))
+        }
+
+        val net = CountingTransport()
+        val reused = invoke(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(net).build()),
+            buildJsonObject {
+                put("source_id", JsonPrimitive(sourceId))
+                put("focus", JsonPrimitive(COLLAPSED_DEEP_MARKER))
+            },
+        )
+        assertEquals("true", reused.str("cached"))
+        assertEquals("browser", reused.str("source_kind"))
+        assertTrue(reused.str("text").orEmpty().contains(COLLAPSED_DEEP_MARKER))
+        assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
     }
 
     @Test
@@ -497,6 +559,33 @@ class WebViewResearchInstrumentedTest {
         append("</body></html>")
     }
 
+    /**
+     * Models mobile article skins such as Minerva: the complete semantic article is already in the
+     * DOM, but a stylesheet hides later sections from `innerText` until the user expands them.
+     */
+    private fun collapsedArticlePageHtml(): String = buildString {
+        append("<!doctype html><html><head><title>Collapsed semantic article</title>")
+        append("<style>.collapsed-section{display:none}.marker{content:'$STYLE_SENTINEL'}</style>")
+        append("<script>window.__collapsedLeak='$SCRIPT_SENTINEL';</script>")
+        append("</head><body><main><article><h1>Collapsed semantic article</h1>")
+        repeat(8) {
+            append("<p>$COLLAPSED_VISIBLE_MARKER. $PROSE</p>")
+        }
+        append("<section class='collapsed-section'><h2>Archived research section</h2>")
+        val filler =
+            "<p>The archived catalogue records an orbital observation, calibration sequence, " +
+                "reference ledger, and seasonal measurement for later scientific review.</p>"
+        repeat(260) { append(filler) }
+        append("<p>The final archived finding is $COLLAPSED_DEEP_MARKER.</p>")
+        append("</section>")
+        append("<script>window.__insideLeak='$SCRIPT_SENTINEL';</script>")
+        append("<style>.inside-marker{content:'$STYLE_SENTINEL'}</style>")
+        append("<div style='display:none'>$DISPLAY_NONE_SENTINEL</div>")
+        append("<div hidden>$HIDDEN_SENTINEL</div>")
+        append("<form><input type='password' value='$PASSWORD_SENTINEL'></form>")
+        append("</article></main></body></html>")
+    }
+
     private fun shortPageHtml(): String =
         "<!doctype html><html><head><title>Short page</title></head><body>" +
             "<div id='only'>$SHORT_PAGE_MARKER and very little else.</div></body></html>"
@@ -526,6 +615,8 @@ class WebViewResearchInstrumentedTest {
 
         const val PROSE_MARKER = "Zephyrion"
         const val DEEP_MARKER = "Quintessence-9F3"
+        const val COLLAPSED_VISIBLE_MARKER = "VISIBLE-COLLAPSED-INTRO-4"
+        const val COLLAPSED_DEEP_MARKER = "TRANSHUMANISM-DEPTH-75"
         const val SELECTOR_MARKER = "SELECTORMARKER5"
         const val HOSTILE_MARKER = "HOSTILEMARKER7"
         const val UNICODE_MARKER = "UNICODEMARKER9"

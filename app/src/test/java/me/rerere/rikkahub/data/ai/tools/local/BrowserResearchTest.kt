@@ -88,7 +88,18 @@ class BrowserResearchTest {
         url: String? = "https://app.example.com/rendered",
         title: String? = headline,
         readTruncated: Boolean = false,
-    ) = RenderedPage(url, title, text, mode, scope, readTruncated)
+        researchText: String? = null,
+        researchTruncated: Boolean = false,
+    ) = RenderedPage(
+        url = url,
+        title = title,
+        text = text,
+        extractMode = mode,
+        scope = scope,
+        readTruncated = readTruncated,
+        researchText = researchText,
+        researchTruncated = researchTruncated,
+    )
 
     private fun readerOf(vararg pages: RenderedRead) = FakeReader(pages.toMutableList())
 
@@ -149,6 +160,48 @@ class BrowserResearchTest {
         val cached = webSourceCache.get(json["source_id"]!!.jsonPrimitive.content)!!
         assertTrue("stored ${cached.text.length} chars", cached.text.length > 400)
         assertTrue(cached.text.contains("Гидроцикл"))
+    }
+
+    @Test
+    fun `a separate research corpus feeds cache and focus without changing the visible answer`() {
+        val visible = "Visible article introduction."
+        val deep = "Collapsed semantic section about transhumanism and neural interfaces."
+        val research = visible + "\n\n" + "Deep archive filler. ".repeat(40) + deep
+        val reader = readerOf(
+            RenderedRead.Ok(
+                page(
+                    text = visible,
+                    mode = "raw",
+                    researchText = research,
+                    researchTruncated = true,
+                ),
+            ),
+        )
+
+        val browser = invokeBrowser(reader, """{"max_chars":8000}""")
+        assertEquals(
+            "the legacy response remains the rendered text",
+            visible,
+            browser["text"]!!.jsonPrimitive.content,
+        )
+        assertFalse(
+            "research truncation must not claim that the short visible response was clipped",
+            browser["truncated"]!!.jsonPrimitive.content.toBoolean(),
+        )
+
+        val id = browser["source_id"]!!.jsonPrimitive.content
+        val cached = webSourceCache.get(id)!!
+        assertEquals(research, cached.text)
+        assertTrue("the cache must preserve the research-corpus truncation bit", cached.bodyTruncated)
+
+        val web = FakeWeb("<html><body>must not be fetched</body></html>")
+        val focused = invokeTool(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(web).build()),
+            """{"source_id":"$id","focus":"transhumanism neural interfaces"}""",
+        )
+        assertTrue(focused["text"]!!.jsonPrimitive.content.contains(deep))
+        assertEquals("true", focused["cached"]!!.jsonPrimitive.content)
+        assertEquals(0, web.requests.get())
     }
 
     // ---- 3: ranking sees past the response window -----------------------------------------

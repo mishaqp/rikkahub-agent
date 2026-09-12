@@ -15,13 +15,14 @@ import me.rerere.search.extract.WebSourceOrigin
 import me.rerere.search.extract.webSourceCache
 
 /**
- * Hard cap on the visible text one browser research snapshot will hold.
+ * Hard cap on the text one browser research snapshot will hold.
  *
  * The browser read tools clamp what they *return* at 64 KB, but a research source is different:
  * ranking has to see the whole rendered page, or a passage the first window cut off can never be
  * found - the same reason `web_fetch` ranks the un-windowed body. 128 KiB doubles that output
- * ceiling and stays finite: the text is bounded before it ever crosses the JS bridge, and 24
- * snapshots of 128 KiB come to 3 MiB, inside the shared cache's own 4 MiB budget.
+ * ceiling and stays finite: both visible text and the research corpus are bounded before they cross
+ * the JS bridge, and 24 maximum-size snapshots come to 3 MiB, inside the shared cache's own 4 MiB
+ * budget.
  */
 internal const val BROWSER_RESEARCH_MAX_CHARS = 128 * 1024
 
@@ -35,9 +36,15 @@ internal const val MODE_READABILITY = "readability"
 internal enum class RenderedScope { FULL_PAGE, SELECTOR }
 
 /**
- * What a browser read produced. [text] is the rendered text bounded by
- * [BROWSER_RESEARCH_MAX_CHARS] and *not* clipped to the caller's `max_chars`, so one read can
- * answer with a window, feed ranking, and be cached whole.
+ * What a browser read produced.
+ *
+ * [text] is the legacy rendered/Readability answer. [researchText], when present, is a separately
+ * extracted semantic corpus for ranking and source reuse. Keeping them separate matters on mobile
+ * pages whose article sections are collapsed with CSS: `innerText` must still describe what is
+ * visibly rendered, while research must be able to reach the prose already present in the DOM.
+ *
+ * Both strings are bounded by [BROWSER_RESEARCH_MAX_CHARS] before they cross the JS bridge and are
+ * not clipped to the caller's `max_chars`.
  */
 internal data class RenderedPage(
     val url: String?,
@@ -46,6 +53,8 @@ internal data class RenderedPage(
     val extractMode: String,
     val scope: RenderedScope,
     val readTruncated: Boolean = false,
+    val researchText: String? = null,
+    val researchTruncated: Boolean = false,
 )
 
 /** Outcome of reading the live page. */
@@ -78,11 +87,11 @@ internal fun interface RenderedPageReader {
 /**
  * Last line of defence for what a browser snapshot may contain.
  *
- * The page JS already reads *rendered* text (`innerText`, or Readability's `textContent`), which
- * excludes script, style and hidden nodes by construction. This pass re-checks the markers that
- * must never reach the shared cache even if a page - or a future JS change - leaks them: script
- * and style bodies, hidden containers, form controls and their values (an attribute such as
- * `value="..."` disappears with its tag), comments, and any residual markup.
+ * The page JS extracts text nodes only and removes executable, form and explicitly hidden
+ * subtrees before a semantic corpus crosses the bridge. This pass remains the last line of defence:
+ * it removes script and style bodies, hidden containers, form controls and their values (an
+ * attribute such as `value="..."` disappears with its tag), comments, and any residual markup
+ * should a page - or a future JS change - hand us HTML instead of prose.
  *
  * It runs on bounded text and each step is a single linear scan, so a pathological page cannot
  * turn it into a stalling loop.
@@ -197,7 +206,7 @@ internal fun collapseRenderedWhitespace(text: String): String =
 /**
  * Store a rendered page in the shared source cache.
  *
- * Only sanitised visible text and non-sensitive metadata go in: a browser may sit on an
+ * Only sanitised research text and non-sensitive metadata go in: a browser may sit on an
  * authenticated page, so cookies, storage, DOM, form values and credentials stay in the WebView.
  * Returns the new handle, or null when there is nothing worth keeping (empty text) or the read was
  * scoped to a selector - a subtree is not the page and must not masquerade as one.
@@ -250,8 +259,14 @@ internal fun browserTextEnvelope(
 ): JsonObject {
     if (focus != null && requestedSelector != null) return focusSelectorConflictEnvelope()
 
-    val researchText = BrowserTextSanitizer.sanitize(page.text)
-    val sourceId = storeBrowserSource(page, researchText, readTruncated, nowMillis, store)
+    val supplementalResearchText = page.researchText
+        ?.let(BrowserTextSanitizer::sanitize)
+        ?.takeIf { it.isNotBlank() }
+    val researchText = supplementalResearchText
+        ?: BrowserTextSanitizer.sanitize(page.text)
+    val sourceTruncated =
+        if (supplementalResearchText != null) page.researchTruncated else readTruncated
+    val sourceId = storeBrowserSource(page, researchText, sourceTruncated, nowMillis, store)
 
     if (focus != null) {
         val budget = minOf(maxChars, QueryFocusedExtractor.FOCUS_CHAR_BUDGET)
@@ -268,8 +283,8 @@ internal fun browserTextEnvelope(
             put("returned_chars", focused.returnedChars)
             put("selection_truncated", focused.returnedChars < focused.originalChars)
             if (focused.fallbackUsed) put("focus_fallback", true)
-            // A ranked selection is not a window: "truncated" reports only the bounded read.
-            put("truncated", readTruncated)
+            // A ranked selection is not a window: "truncated" reports the bounded source corpus.
+            put("truncated", sourceTruncated)
             put("extract_mode", page.extractMode)
             sourceId?.let {
                 put("source_id", it)

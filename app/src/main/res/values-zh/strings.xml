@@ -2253,4 +2253,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="clodex_provider_short_description">兼容 OpenAI · Responses API</string>
   <string name="clodex_provider_dashboard">控制面板</string>
   <string name="clodex_provider_docs">API 文档</string>
+  <string name="doctor_check_llamacpp_models">llama.cpp 模型</string>
+  <string name="doctor_detail_no_llama_models">未安装 llama.cpp 模型。</string>
+  <string name="doctor_fix_open_local_llama">打开 Local · llama.cpp</string>
+  <string name="doctor_detail_llamacpp_missing">已安装的 %2$d 个 llama.cpp 模型中有 %1$d 个不在磁盘上：%3$s。文件可能已被移动、删除，或存储卷已卸载。</string>
 </resources>

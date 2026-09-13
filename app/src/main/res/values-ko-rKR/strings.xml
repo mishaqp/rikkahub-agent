@@ -1928,4 +1928,23 @@ mDNS 주소: .local 호스트네임을 사용하며, IP를 몰라도 같은 네�
   <string name="clodex_provider_short_description">OpenAI 호환 · Responses API</string>
   <string name="clodex_provider_dashboard">대시보드</string>
   <string name="clodex_provider_docs">API 문서</string>
+  <string name="local_llm_llamacpp_catalog_title">사용 가능한 모델</string>
+  <string name="local_llm_llamacpp_catalog_subtitle">도구 호출 채팅 템플릿을 갖춘 엄선된 GGUF 모델입니다. 선택하면 한 번에 설치할 수 있습니다.</string>
+  <string name="local_llm_llamacpp_import_action">기기에 있는 GGUF 설치</string>
+  <string name="local_llm_hf_search_title">Hugging Face 검색</string>
+  <string name="local_llm_hf_search_placeholder">모델 이름(예: Qwen3)</string>
+  <string name="local_llm_hf_search_action">검색</string>
+  <string name="local_llm_hf_search_no_results">GGUF 저장소를 찾지 못했습니다</string>
+  <string name="local_llm_hf_search_failed_format">검색 실패: %1$s</string>
+  <string name="local_llm_hf_downloads_format">다운로드 %1$d회</string>
+  <string name="local_llm_hf_back_to_results">검색 결과로 돌아가기</string>
+  <string name="local_llm_hf_requires_access">이 저장소는 액세스 제한 또는 비공개 상태입니다. 액세스 토큰이 필요하지만 이 앱은 지원하지 않습니다. 공개 저장소를 선택하세요.</string>
+  <string name="local_llm_hf_files_error_format">파일 목록을 가져오지 못했습니다: %1$s</string>
+  <string name="local_llm_hf_no_gguf_files">이 저장소에 .gguf 파일이 없습니다</string>
+  <string name="local_llm_hf_file_size_gb_format">%1$.2f GB</string>
+  <string name="local_llm_hf_loading_files">파일 불러오는 중…</string>
+  <string name="doctor_check_llamacpp_models">llama.cpp 모델</string>
+  <string name="doctor_detail_no_llama_models">설치된 llama.cpp 모델이 없습니다.</string>
+  <string name="doctor_fix_open_local_llama">Local · llama.cpp 열기</string>
+  <string name="doctor_detail_llamacpp_missing">설치된 llama.cpp 모델 %2$d개 중 %1$d개가 디스크에 없습니다: %3$s. 파일이 이동 또는 삭제되었거나 저장소 볼륨이 마운트 해제되었을 수 있습니다.</string>
 </resources>

@@ -1765,7 +1765,7 @@
   <string name="local_llm_llamacpp_catalog_subtitle">استكشاف وتنزيل نماذج GGUF المحسنة</string>
   <string name="local_llm_llamacpp_import_action">استيراد نموذج GGUF</string>
   <string name="local_llm_hf_search_title">البحث في HuggingFace</string>
-  <string name="local_llm_hf_search_placeholder">ابحث عن نماذج GGUF (مثال: Qwen2.5-7B-Instruct)...</string>
+  <string name="local_llm_hf_search_placeholder">ابحث عن نماذج GGUF (مثال: Qwen3)…</string>
   <string name="local_llm_hf_search_action">بحث</string>
   <string name="local_llm_hf_search_no_results">لم يتم العثور على نماذج في HuggingFace</string>
   <string name="local_llm_hf_search_failed_format">فشل البحث في HuggingFace: %1$s</string>
@@ -2149,4 +2149,8 @@
   <string name="clodex_provider_short_description">متوافق مع OpenAI · Responses API</string>
   <string name="clodex_provider_dashboard">لوحة التحكم</string>
   <string name="clodex_provider_docs">وثائق API</string>
+  <string name="doctor_check_llamacpp_models">نماذج llama.cpp</string>
+  <string name="doctor_detail_no_llama_models">لا توجد نماذج llama.cpp مثبتة.</string>
+  <string name="doctor_fix_open_local_llama">فتح Local · llama.cpp</string>
+  <string name="doctor_detail_llamacpp_missing">%1$d من أصل %2$d من نماذج llama.cpp المثبتة مفقودة من القرص: %3$s. ربما نُقل الملف أو حُذف أو تم إلغاء تحميل وحدة التخزين.</string>
 </resources>

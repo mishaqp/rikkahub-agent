@@ -1928,4 +1928,23 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="clodex_provider_short_description">OpenAI互換 · Responses API</string>
   <string name="clodex_provider_dashboard">ダッシュボード</string>
   <string name="clodex_provider_docs">APIドキュメント</string>
+  <string name="local_llm_llamacpp_catalog_title">利用可能なモデル</string>
+  <string name="local_llm_llamacpp_catalog_subtitle">ツール呼び出し対応のチャットテンプレートを備えた厳選 GGUF モデルです。選択するとワンタップでインストールできます。</string>
+  <string name="local_llm_llamacpp_import_action">端末内の GGUF をインストール</string>
+  <string name="local_llm_hf_search_title">Hugging Face を検索</string>
+  <string name="local_llm_hf_search_placeholder">モデル名（例: Qwen3）</string>
+  <string name="local_llm_hf_search_action">検索</string>
+  <string name="local_llm_hf_search_no_results">GGUF リポジトリが見つかりません</string>
+  <string name="local_llm_hf_search_failed_format">検索に失敗しました: %1$s</string>
+  <string name="local_llm_hf_downloads_format">ダウンロード数: %1$d</string>
+  <string name="local_llm_hf_back_to_results">検索結果に戻る</string>
+  <string name="local_llm_hf_requires_access">このリポジトリはゲート付きまたは非公開です。アクセストークンが必要ですが、このアプリでは対応していません。公開リポジトリを選択してください。</string>
+  <string name="local_llm_hf_files_error_format">ファイル一覧を取得できません: %1$s</string>
+  <string name="local_llm_hf_no_gguf_files">このリポジトリに .gguf ファイルはありません</string>
+  <string name="local_llm_hf_file_size_gb_format">%1$.2f GB</string>
+  <string name="local_llm_hf_loading_files">ファイルを読み込み中…</string>
+  <string name="doctor_check_llamacpp_models">llama.cpp モデル</string>
+  <string name="doctor_detail_no_llama_models">llama.cpp モデルがインストールされていません。</string>
+  <string name="doctor_fix_open_local_llama">Local · llama.cpp を開く</string>
+  <string name="doctor_detail_llamacpp_missing">インストール済みの llama.cpp モデル %2$d 件中 %1$d 件がディスクにありません: %3$s。ファイルが移動、削除されたか、ストレージがマウント解除された可能性があります。</string>
 </resources>

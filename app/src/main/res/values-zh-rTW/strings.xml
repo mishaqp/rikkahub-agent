@@ -2187,4 +2187,8 @@
   <string name="workspace_detail_compatibility_mode">相容模式</string>
   <string name="workspace_detail_compatibility_mode_desc">如果終端機無法啟動，請嘗試啟用此選項。這可能會降低效能。適用於新的終端機分頁和後續指令。</string>
   <string name="workspace_detail_settings_save_failed">儲存設定失敗</string>
+  <string name="doctor_check_llamacpp_models">llama.cpp 模型</string>
+  <string name="doctor_detail_no_llama_models">尚未安裝 llama.cpp 模型。</string>
+  <string name="doctor_fix_open_local_llama">開啟 Local · llama.cpp</string>
+  <string name="doctor_detail_llamacpp_missing">已安裝的 %2$d 個 llama.cpp 模型中有 %1$d 個不在磁碟上：%3$s。檔案可能已被移動、刪除，或儲存空間已卸載。</string>
 </resources>

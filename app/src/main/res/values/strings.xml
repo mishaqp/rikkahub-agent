@@ -1756,7 +1756,7 @@
   <string name="local_llm_hf_search_action">Search</string>
   <string name="local_llm_hf_search_no_results">No GGUF repos found</string>
   <string name="local_llm_hf_search_failed_format">Search failed: %1$s</string>
-  <string name="local_llm_hf_downloads_format">%1$d downloads</string>
+  <string name="local_llm_hf_downloads_format">Downloads: %1$d</string>
   <string name="local_llm_hf_back_to_results">Back to search results</string>
   <string name="local_llm_hf_requires_access">This repo is gated or private. It needs an access token, which this app does not support. Pick a public repo instead.</string>
   <string name="local_llm_hf_files_error_format">Could not list files: %1$s</string>
@@ -2219,7 +2219,6 @@
   <string name="doctor_fix_open_mcp">Open MCP servers</string>
   <string name="doctor_fix_open_skills">Open Skills</string>
   <string name="doctor_fix_open_litert">Open Local LiteRT</string>
-  <string name="doctor_fix_open_llamacpp">Open Local llama.cpp</string>
   <string name="doctor_fix_open_nfc">Open NFC settings</string>
   <string name="doctor_fix_request_whitelist">Request whitelist</string>
   <string name="doctor_fix_rebuild_index">Rebuild search index</string>
@@ -2484,7 +2483,7 @@
   <string name="doctor_detail_nfc_off_needed_by_3">NFC is turned off in system settings. Needed by: %1$s.</string>
   <string name="doctor_detail_model_rates_row">%1$s: prefill %2$.1f tok/s, decode %3$.1f tok/s%4$s</string>
   <string name="doctor_detail_mtp_on">, MTP on</string>
-  <string name="doctor_detail_llamacpp_missing">%1$d of %2$d installed llama.cpp model(s) missing from disk: %3$s. The file may have been moved, deleted, or its storage volume unmounted.</string>
+  <string name="doctor_detail_llamacpp_missing">Missing llama.cpp models: %1$d/%2$d. Not found on disk: %3$s. The file may have been moved, deleted, or its storage volume unmounted.</string>
   <string name="doctor_detail_dns_fail">DNS resolution failed or timed out. NetworkChangeMonitor evicts the OkHttp pool on network changes — if this stays red, check connectivity.</string>
   <string name="doctor_detail_images_all_ok">%1$d generated image record(s), all backed by a file on disk.</string>
   <string name="doctor_detail_images_orphan">%1$d of %2$d generated image record(s) point at a file that no longer exists on disk.</string>

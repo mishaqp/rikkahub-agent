@@ -60,6 +60,7 @@ private const val MAX_SCREENSHOT_HEIGHT_PX = 8192
 private const val SCREENSHOT_CACHE_SUBDIR = "browser-shots"
 private const val OPEN_NAVIGATION_START_DELAY_MS = 100L
 private const val OPEN_NAVIGATION_POLL_MS = 100L
+private const val ACTION_NAVIGATION_START_TIMEOUT_MS = 2_000L
 
 /**
  * Hard cap on the string browser_eval_js puts in its result envelope. Matches the 64 KB
@@ -127,6 +128,19 @@ internal fun navigationHasStarted(
     return previous == null || previous == requested || current != previous
 }
 
+private suspend fun WebView.currentDocumentUrl(): String? {
+    val raw = evaluateJavascriptAsync("(function(){return location.href;})()", 1_500L)
+        ?: return null
+    return runCatching {
+        Json.parseToJsonElement(raw).jsonPrimitive.contentOrNull
+    }.getOrNull()
+}
+
+/**
+ * Wait until both WebView and the JavaScript document have left the old URL, then wait for
+ * the new document to complete. Checking WebView.url alone is not sufficient: Chromium updates
+ * it before evaluateJavascript switches away from the old, already-complete document.
+ */
 private suspend fun WebView.awaitOpenedPage(
     previousUrl: String?,
     requestedUrl: String,
@@ -135,9 +149,13 @@ private suspend fun WebView.awaitOpenedPage(
     val deadline = System.currentTimeMillis() + timeoutMs
     delay(OPEN_NAVIGATION_START_DELAY_MS)
     while (System.currentTimeMillis() < deadline) {
-        if (navigationHasStarted(previousUrl, requestedUrl, url)) {
-            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
-            return awaitReadyState(remaining)
+        val webViewUrl = withContext(Dispatchers.Main) { url }
+        if (navigationHasStarted(previousUrl, requestedUrl, webViewUrl)) {
+            val documentUrl = currentDocumentUrl()
+            if (navigationHasStarted(previousUrl, requestedUrl, documentUrl)) {
+                val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+                return awaitReadyState(remaining)
+            }
         }
         delay(OPEN_NAVIGATION_POLL_MS)
     }
@@ -168,6 +186,93 @@ private fun textPart(obj: JsonObject): List<UIMessagePart> =
  * (also valid JS string syntax).
  */
 private fun jsString(s: String): String = JsonPrimitive(s).toString()
+
+/**
+ * True when a DOM action reports a real URL destination different from the current page.
+ * Link clicks and form submits use this to avoid accepting the old document's readyState.
+ */
+internal fun actionExpectsNavigation(previousUrl: String?, targetUrl: String?): Boolean {
+    val target = normalizedNavigationUrl(targetUrl)
+    return target != null &&
+        target != "about:blank" &&
+        target != normalizedNavigationUrl(previousUrl)
+}
+
+/**
+ * Return the anchor destination before dispatching click(). The destination lets Kotlin wait
+ * for the new document instead of reading the old page and returning a false success.
+ */
+internal fun buildClickScript(selector: String): String {
+    val sel = jsString(selector)
+    return """(function(){
+        try {
+            var el = document.querySelector($sel);
+            if (!el) return JSON.stringify({error:'selector_not_found', selector:$sel});
+            el.scrollIntoView({block:'center', inline:'center'});
+            var targetUrl = (el.tagName === 'A' && el.href) ? el.href : '';
+            el.click();
+            return JSON.stringify({clicked:true, target_url:targetUrl});
+        } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
+    })()"""
+}
+
+/**
+ * Return form.action before submission so callers can wait for the POST destination.
+ */
+internal fun buildSubmitScript(selector: String): String {
+    val sel = jsString(selector)
+    return """(function(){
+        try {
+            var el = document.querySelector($sel);
+            if (!el) return JSON.stringify({error:'selector_not_found', selector:$sel});
+            var form = el.tagName === 'FORM' ? el : (el.form || el.closest('form'));
+            if (!form) return JSON.stringify({error:'no_enclosing_form'});
+            var targetUrl = form.action || location.href;
+            var isSubmitControl =
+                (el.tagName === 'BUTTON' && (el.type === 'submit' || el.type === '')) ||
+                (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'));
+            if (isSubmitControl) {
+                el.click();
+                return JSON.stringify({submitted:true, via:'button_click', target_url:targetUrl});
+            }
+            if (typeof form.requestSubmit === 'function') form.requestSubmit();
+            else form.submit();
+            return JSON.stringify({submitted:true, via:'form_submit', target_url:targetUrl});
+        } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
+    })()"""
+}
+
+private data class ActionNavigationWait(
+    val completed: Boolean,
+    val directLoadFallback: Boolean,
+)
+
+private suspend fun WebView.awaitActionNavigation(
+    previousUrl: String?,
+    targetUrl: String?,
+    allowDirectLoadFallback: Boolean,
+): ActionNavigationWait {
+    if (!actionExpectsNavigation(previousUrl, targetUrl)) {
+        return ActionNavigationWait(awaitReadyState(8_000L), directLoadFallback = false)
+    }
+
+    val target = checkNotNull(targetUrl)
+    val firstWait = if (allowDirectLoadFallback) ACTION_NAVIGATION_START_TIMEOUT_MS else 8_000L
+    if (awaitOpenedPage(previousUrl, target, firstWait)) {
+        return ActionNavigationWait(completed = true, directLoadFallback = false)
+    }
+    if (!allowDirectLoadFallback) {
+        return ActionNavigationWait(completed = false, directLoadFallback = false)
+    }
+
+    // Some pages suppress synthetic anchor clicks. Loading the exact resolved href keeps the
+    // browser tool deterministic while preserving normal click behaviour when it worked.
+    withContext(Dispatchers.Main) { loadUrl(target) }
+    return ActionNavigationWait(
+        completed = awaitOpenedPage(previousUrl, target, 8_000L),
+        directLoadFallback = true,
+    )
+}
 
 /**
  * Wrap a tool's dispatch with a RUNNING -> OK/FAILED [me.rerere.rikkahub.browser.BrowserAiAction]
@@ -647,22 +752,29 @@ fun browserClickTool(): Tool = Tool(
                 BrowserControllerHandle.withController {
                     trackJsonAction(BrowserAiActionKind.CLICK, selector) {
                         withDiff(full) {
-                            val js = """(function(){
-                                try {
-                                    var el = document.querySelector(${jsString(selector)});
-                                    if (!el) return JSON.stringify({error:'selector_not_found', selector:${jsString(selector)}});
-                                    el.scrollIntoView({block:'center', inline:'center'});
-                                    el.click();
-                                    return JSON.stringify({clicked:true});
-                                } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
-                            })()"""
-                            val raw = webView.evaluateJavascriptAsync(js)
-                            val res = parseJsResult(raw)
+                            val beforeUrl = webView.url.orEmpty()
+                            historyFallbackSnapshots.remove(webView)
+                            val res = parseJsResult(
+                                webView.evaluateJavascriptAsync(buildClickScript(selector)),
+                            )
                             if (res.containsKey("error")) return@withDiff res
-                            webView.awaitReadyState(8_000L)
+                            val targetUrl = res["target_url"]?.jsonPrimitive?.contentOrNull
+                            val navigation = webView.awaitActionNavigation(
+                                previousUrl = beforeUrl,
+                                targetUrl = targetUrl,
+                                allowDirectLoadFallback = true,
+                            )
+                            if (actionExpectsNavigation(beforeUrl, targetUrl) && !navigation.completed) {
+                                return@withDiff buildJsonObject {
+                                    put("error", "navigation_not_completed")
+                                    put("detail", "The click target was resolved, but the destination did not finish loading.")
+                                    put("target_url", targetUrl.orEmpty())
+                                }
+                            }
                             buildJsonObject {
                                 put("success", true)
                                 put("post_click_url", webView.url.orEmpty())
+                                if (navigation.directLoadFallback) put("method", "href_load_fallback")
                             }
                         }
                     }
@@ -840,24 +952,25 @@ fun browserSubmitTool(): Tool = Tool(
                 BrowserControllerHandle.withController {
                     trackJsonAction(BrowserAiActionKind.SUBMIT, selector) {
                         withDiff(full) {
-                            val js = """(function(){
-                                try {
-                                    var el = document.querySelector(${jsString(selector)});
-                                    if (!el) return JSON.stringify({error:'selector_not_found', selector:${jsString(selector)}});
-                                    if (el.tagName === 'BUTTON' && (el.type === 'submit' || el.type === '')) {
-                                        el.click();
-                                        return JSON.stringify({submitted:true, via:'button_click'});
-                                    }
-                                    var form = el.closest('form');
-                                    if (!form) return JSON.stringify({error:'no_enclosing_form'});
-                                    if (typeof form.requestSubmit === 'function') form.requestSubmit();
-                                    else form.submit();
-                                    return JSON.stringify({submitted:true, via:'form_submit'});
-                                } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
-                            })()"""
-                            val res = parseJsResult(webView.evaluateJavascriptAsync(js))
+                            val beforeUrl = webView.url.orEmpty()
+                            historyFallbackSnapshots.remove(webView)
+                            val res = parseJsResult(
+                                webView.evaluateJavascriptAsync(buildSubmitScript(selector)),
+                            )
                             if (res.containsKey("error")) return@withDiff res
-                            webView.awaitReadyState(8_000L)
+                            val targetUrl = res["target_url"]?.jsonPrimitive?.contentOrNull
+                            val navigation = webView.awaitActionNavigation(
+                                previousUrl = beforeUrl,
+                                targetUrl = targetUrl,
+                                allowDirectLoadFallback = false,
+                            )
+                            if (actionExpectsNavigation(beforeUrl, targetUrl) && !navigation.completed) {
+                                return@withDiff buildJsonObject {
+                                    put("error", "navigation_not_completed")
+                                    put("detail", "The form was submitted, but the destination did not finish loading.")
+                                    put("target_url", targetUrl.orEmpty())
+                                }
+                            }
                             buildJsonObject {
                                 put("success", true)
                                 put("post_submit_url", webView.url.orEmpty())
@@ -1086,18 +1199,25 @@ fun browserClickAndReadTool(): Tool = Tool(
                     trackJsonAction(BrowserAiActionKind.READ, selector) {
                         val before = if (mode == "diff") captureBodyText() else ""
                         val titleBefore = withContext(Dispatchers.Main) { webView.title.orEmpty() }
-                        val clickJs = """(function(){
-                            try {
-                                var el = document.querySelector(${jsString(selector)});
-                                if (!el) return JSON.stringify({error:'selector_not_found', selector:${jsString(selector)}});
-                                el.scrollIntoView({block:'center', inline:'center'});
-                                el.click();
-                                return JSON.stringify({clicked:true});
-                            } catch(e) { return JSON.stringify({error:'js_failed', detail:String(e)}); }
-                        })()"""
-                        val clickRes = parseJsResult(webView.evaluateJavascriptAsync(clickJs))
+                        val beforeUrl = withContext(Dispatchers.Main) { webView.url.orEmpty() }
+                        historyFallbackSnapshots.remove(webView)
+                        val clickRes = parseJsResult(
+                            webView.evaluateJavascriptAsync(buildClickScript(selector)),
+                        )
                         if (clickRes.containsKey("error")) return@trackJsonAction clickRes
-                        webView.awaitReadyState(8_000L)
+                        val targetUrl = clickRes["target_url"]?.jsonPrimitive?.contentOrNull
+                        val navigation = webView.awaitActionNavigation(
+                            previousUrl = beforeUrl,
+                            targetUrl = targetUrl,
+                            allowDirectLoadFallback = true,
+                        )
+                        if (actionExpectsNavigation(beforeUrl, targetUrl) && !navigation.completed) {
+                            return@trackJsonAction buildJsonObject {
+                                put("error", "navigation_not_completed")
+                                put("detail", "The click target was resolved, but the destination did not finish loading.")
+                                put("target_url", targetUrl.orEmpty())
+                            }
+                        }
                         val postUrl = withContext(Dispatchers.Main) { webView.url.orEmpty() }
                         val postTitle = withContext(Dispatchers.Main) { webView.title.orEmpty() }
                         @Suppress("UNUSED_VARIABLE")
@@ -1481,17 +1601,16 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
     val out = withTimeoutOrNull(toolTimeoutMs) {
         BrowserControllerHandle.withController {
             trackJsonAction(kind, detail = null) {
-                // Native canGoBack()/goBack() aren't wrapped in a try/catch JS shell the way
-                // every other tool's evaluateJavascript payload is (`(function(){try{...}
-                // catch(e){...}})()`), so an exception here (e.g. the WebView torn down out
-                // from under an in-flight dispatch) would otherwise propagate uncaught out of
-                // this whole withController block. Catch it explicitly so a transient WebView
-                // hiccup reports an honest {success:false, error:...} instead of surfacing as
-                // an opaque tool_failed — the session itself is untouched either way; this
-                // only affects what THIS call reports.
+                var previousUrl = ""
+                var targetUrl: String? = null
+                var recoverySnapshot: HistoryFallbackSnapshot? = null
+                var usedOffsetFallback = false
+                var navigationDispatched = false
+
                 val navResult = runCatching {
                     withContext(Dispatchers.Main) {
                         val liveUrl = webView.url.orEmpty()
+                        previousUrl = liveUrl
                         val fallback = historyFallbackSnapshots[webView]?.takeIf { it.matches(liveUrl) }
                         if (fallback == null) historyFallbackSnapshots.remove(webView)
 
@@ -1507,54 +1626,104 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
                         val fallbackTarget = fallback?.target(forward)
                         if (fallback != null) {
                             if (fallbackTarget == null) {
-                                false to false
+                                false
                             } else {
+                                targetUrl = fallbackTarget.url
+                                navigationDispatched = true
                                 webView.loadUrl(fallbackTarget.url)
                                 fallback.commit(fallbackTarget)
-                                true to true
+                                usedOffsetFallback = true
+                                true
                             }
                         } else {
-                            when (resolveHistoryNav(forward, if (forward) canForward else canBack, list.currentIndex, list.size)) {
+                            val targetIndex = list.currentIndex + if (forward) 1 else -1
+                            val nativeTarget = if (targetIndex in 0 until list.size) {
+                                HistoryFallbackTarget(targetIndex, list.getItemAtIndex(targetIndex).url)
+                            } else {
+                                null
+                            }
+                            targetUrl = nativeTarget?.url
+                            when (
+                                resolveHistoryNav(
+                                    forward,
+                                    if (forward) canForward else canBack,
+                                    list.currentIndex,
+                                    list.size,
+                                )
+                            ) {
                                 HistoryNavMethod.NATIVE -> {
+                                    if (nativeTarget != null) {
+                                        recoverySnapshot = HistoryFallbackSnapshot(
+                                            urls = List(list.size) { list.getItemAtIndex(it).url },
+                                            currentIndex = list.currentIndex,
+                                            currentUrl = liveUrl,
+                                        )
+                                    }
+                                    navigationDispatched = true
                                     if (forward) webView.goForward() else webView.goBack()
-                                    true to false
+                                    true
                                 }
                                 HistoryNavMethod.OFFSET -> {
-                                    // goBackOrForward(offset) proved inert on device: this WebView build's
-                                    // GoToOffset honors the skippable flag too, so it silently no-ops.
-                                    // Capture the unpolluted list before loading the target URL directly;
-                                    // the snapshot keeps forward/back usable after that load appends an entry.
                                     val snapshot = HistoryFallbackSnapshot(
                                         urls = List(list.size) { list.getItemAtIndex(it).url },
                                         currentIndex = list.currentIndex,
                                         currentUrl = liveUrl,
                                     )
                                     val target = checkNotNull(snapshot.target(forward))
+                                    targetUrl = target.url
                                     android.util.Log.i(
                                         "BrowserNav",
                                         "runHistoryNav: native nav refused, falling back to explicit history-item load: " +
                                             target.url.take(120),
                                     )
+                                    navigationDispatched = true
                                     webView.loadUrl(target.url)
                                     snapshot.commit(target)
                                     historyFallbackSnapshots[webView] = snapshot
-                                    true to true
+                                    usedOffsetFallback = true
+                                    true
                                 }
-                                HistoryNavMethod.NONE -> false to false
+                                HistoryNavMethod.NONE -> false
                             }
                         }
                     }
                 }
                 navResult.onFailure {
-                    // Same reasoning as browser_eval_js's dispatch runCatching: a timeout/scope
-                    // cancellation surfaces here as CancellationException too, and must propagate
-                    // rather than be reported as a normal {success:false} nav failure.
                     if (it is CancellationException) throw it
                     android.util.Log.w("BrowserTools", "runHistoryNav: WebView navigation threw", it)
                 }
-                val ok = navResult.getOrNull()?.first ?: false
-                val usedOffsetFallback = navResult.getOrNull()?.second ?: false
-                if (ok) webView.awaitReadyState(8_000L)
+
+                var ok = navResult.getOrNull() == true
+                if (ok) {
+                    val expected = targetUrl
+                    val completed = if (actionExpectsNavigation(previousUrl, expected)) {
+                        webView.awaitOpenedPage(
+                            previousUrl = previousUrl,
+                            requestedUrl = checkNotNull(expected),
+                            timeoutMs = if (usedOffsetFallback) 8_000L else ACTION_NAVIGATION_START_TIMEOUT_MS,
+                        )
+                    } else {
+                        webView.awaitReadyState(8_000L)
+                    }
+                    ok = completed
+
+                    // A native back/forward may claim it can navigate but then silently no-op
+                    // because Chromium marks the entry skippable. Recover inside THIS call.
+                    if (!ok && !usedOffsetFallback && expected != null) {
+                        val snapshot = recoverySnapshot
+                        val target = snapshot?.target(forward)
+                        if (snapshot != null && target != null) {
+                            withContext(Dispatchers.Main) {
+                                webView.loadUrl(target.url)
+                                snapshot.commit(target)
+                                historyFallbackSnapshots[webView] = snapshot
+                            }
+                            usedOffsetFallback = true
+                            ok = webView.awaitOpenedPage(previousUrl, target.url, 8_000L)
+                        }
+                    }
+                }
+
                 val currentUrl = runCatching { webView.url }.getOrNull().orEmpty()
                 if (ok && usedOffsetFallback && currentUrl.isNotBlank()) {
                     historyFallbackSnapshots[webView]?.observeLoadedUrl(currentUrl)
@@ -1562,23 +1731,21 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
                 buildJsonObject {
                     put("success", ok)
                     put("current_url", currentUrl)
-                    if (ok && usedOffsetFallback) {
-                        put("method", "history_load_fallback")
-                    }
+                    if (ok && usedOffsetFallback) put("method", "history_load_fallback")
                     if (navResult.isFailure) {
                         put("error", "nav_failed")
                         put(
                             "detail",
                             (navResult.exceptionOrNull()?.message ?: "webview navigation threw").take(200),
                         )
+                    } else if (navigationDispatched && !ok) {
+                        put("error", "navigation_not_completed")
+                        put("detail", "The history destination did not finish loading.")
                     }
                 }
             }
         }
     } ?: timeoutEnvelope(toolName)
-    // Pass 3: stream the post-nav screenshot to the calling chat in headless mode. Only
-    // fires when the controller is actually in Mode.Headless; foreground-mode is a no-op.
-    // Don't stream when we already returned an error envelope.
     if (out["success"]?.toString() == "true") {
         BrowserController.streamScreenshotIfHeadless(if (forward) "Forward" else "Back")
     }

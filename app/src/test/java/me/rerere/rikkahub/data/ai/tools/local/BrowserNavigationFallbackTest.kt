@@ -94,4 +94,41 @@ class BrowserNavigationFallbackTest {
             ),
         )
     }
+    @Test
+    fun `actions wait only for a different non-empty destination`() {
+        assertTrue(
+            actionExpectsNavigation(
+                previousUrl = "https://example.com/",
+                targetUrl = "https://iana.org/domains/example",
+            ),
+        )
+        assertFalse(
+            actionExpectsNavigation(
+                previousUrl = "https://example.com/",
+                targetUrl = "https://example.com",
+            ),
+        )
+        assertFalse(actionExpectsNavigation("https://example.com/", ""))
+        assertFalse(actionExpectsNavigation("https://example.com/", "about:blank"))
+    }
+
+    @Test
+    fun `click script reports the resolved anchor destination before clicking`() {
+        val script = buildClickScript("""a[href="https://iana.org/domains/example"]""")
+
+        assertTrue(script.contains("document.querySelector"))
+        assertTrue(script.contains("https://iana.org/domains/example"))
+        assertTrue(script.contains("el.href"))
+        assertTrue(script.contains("target_url:targetUrl"))
+    }
+
+    @Test
+    fun `submit script reports form action before submitting`() {
+        val script = buildSubmitScript("form button")
+
+        assertTrue(script.contains("form.action"))
+        assertTrue(script.contains("requestSubmit"))
+        assertTrue(script.contains("target_url:targetUrl"))
+    }
+
 }

@@ -20,7 +20,7 @@ class LlamaCppProviderUpgradeTest {
     )
 
     @Test
-    fun `upgrade seeds llama cpp once after the other on-device runtimes`() {
+    fun `upgrade seeds llama cpp once after LiteRT without rearranging existing rows`() {
         val aicore = DEFAULT_PROVIDERS.filterIsInstance<ProviderSetting.AICore>().single()
         val liteRt = DEFAULT_PROVIDERS.filterIsInstance<ProviderSetting.LiteRtLocal>().single()
         val cloud = remote("Cloud")
@@ -37,7 +37,10 @@ class LlamaCppProviderUpgradeTest {
         )
 
         assertEquals(
-            listOf(aicore.id, liteRt.id, llamaDefault.id, cloud.id),
+            // AICore keeps its established first-place migration, while Cloud and LiteRT retain
+            // their relative persisted order. The newly introduced row belongs directly after
+            // LiteRT; moving Cloud would silently rewrite the user's drag order during upgrade.
+            listOf(aicore.id, cloud.id, liteRt.id, llamaDefault.id),
             upgraded.map { it.id },
         )
         assertEquals(upgraded.map { it.id }, upgradedAgain.map { it.id })

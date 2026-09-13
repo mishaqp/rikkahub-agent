@@ -3,6 +3,7 @@ package me.rerere.rikkahub.data.ai.tools.local
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.webkit.WebView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -37,6 +38,7 @@ import me.rerere.rikkahub.data.ai.tools.HeadlessConversations
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.WeakHashMap
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -56,6 +58,8 @@ import kotlin.uuid.Uuid
 
 private const val MAX_SCREENSHOT_HEIGHT_PX = 8192
 private const val SCREENSHOT_CACHE_SUBDIR = "browser-shots"
+private const val OPEN_NAVIGATION_START_DELAY_MS = 100L
+private const val OPEN_NAVIGATION_POLL_MS = 100L
 
 /**
  * Hard cap on the string browser_eval_js puts in its result envelope. Matches the 64 KB
@@ -102,6 +106,42 @@ private fun isHeadlessInvocation(ctx: ToolInvocationContext?): Boolean {
     val convId = ctx.callerConversationId ?: return false
     val asUuid = runCatching { Uuid.parse(convId) }.getOrNull() ?: return false
     return HeadlessConversations.isHeadless(asUuid)
+}
+
+private fun normalizedNavigationUrl(value: String?): String? =
+    value?.trim()?.takeIf(String::isNotEmpty)?.trimEnd('/')
+
+/**
+ * loadUrl() is asynchronous. A plain readyState poll can still observe the old document as
+ * complete and return its stale title before the new navigation has even started.
+ */
+internal fun navigationHasStarted(
+    previousUrl: String?,
+    requestedUrl: String,
+    currentUrl: String?,
+): Boolean {
+    val current = normalizedNavigationUrl(currentUrl)
+    if (current == null || current == "about:blank") return false
+    val previous = normalizedNavigationUrl(previousUrl)
+    val requested = normalizedNavigationUrl(requestedUrl)
+    return previous == null || previous == requested || current != previous
+}
+
+private suspend fun WebView.awaitOpenedPage(
+    previousUrl: String?,
+    requestedUrl: String,
+    timeoutMs: Long = 8_000L,
+): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    delay(OPEN_NAVIGATION_START_DELAY_MS)
+    while (System.currentTimeMillis() < deadline) {
+        if (navigationHasStarted(previousUrl, requestedUrl, url)) {
+            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+            return awaitReadyState(remaining)
+        }
+        delay(OPEN_NAVIGATION_POLL_MS)
+    }
+    return false
 }
 
 // ---- Common envelope helpers --------------------------------------------------------------
@@ -237,8 +277,10 @@ fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? 
                     BrowserController.startTaskWindow()
                     val result = trackJsonAction(BrowserAiActionKind.OPEN, url) {
                         BrowserControllerHandle.withController {
+                            val previousUrl = webView.url
+                            historyFallbackSnapshots.remove(webView)
                             withContext(Dispatchers.Main) { webView.loadUrl(url) }
-                            webView.awaitReadyState(8_000L)
+                            webView.awaitOpenedPage(previousUrl, url)
                             buildJsonObject {
                                 put("success", true)
                                 put("current_url", webView.url ?: url)
@@ -277,10 +319,12 @@ fun browserOpenTool(context: Context, invocationContext: ToolInvocationContext? 
                             // passed as EXTRA_INITIAL_URL and the WebView began loading it
                             // before bind() returned. Skip a redundant second loadUrl — it
                             // would abort the in-flight load and restart from the top.
+                            val previousUrl = if (wasAlreadyBound) webView.url else null
+                            historyFallbackSnapshots.remove(webView)
                             if (wasAlreadyBound) {
                                 withContext(Dispatchers.Main) { webView.loadUrl(url) }
                             }
-                            webView.awaitReadyState(8_000L)
+                            webView.awaitOpenedPage(previousUrl, url)
                             buildJsonObject {
                                 put("success", true)
                                 put("current_url", webView.url ?: url)
@@ -1364,6 +1408,55 @@ private fun clipText(text: String, maxChars: Int): Pair<String, Boolean> =
  */
 internal enum class HistoryNavMethod { NATIVE, OFFSET, NONE }
 
+internal data class HistoryFallbackTarget(
+    val index: Int,
+    val url: String,
+)
+
+/**
+ * Snapshot of Chromium's history before the explicit-load fallback pollutes its native list.
+ * Keeping our own cursor preserves forward navigation after a fallback back operation.
+ */
+internal class HistoryFallbackSnapshot(
+    urls: List<String>,
+    currentIndex: Int,
+    currentUrl: String,
+) {
+    private val entries = urls.toList()
+    private var index = currentIndex
+    private var observedUrl = currentUrl
+
+    init {
+        require(entries.isNotEmpty())
+        require(index in entries.indices)
+    }
+
+    fun matches(url: String): Boolean = observedUrl == url
+
+    fun target(forward: Boolean): HistoryFallbackTarget? {
+        val targetIndex = index + if (forward) 1 else -1
+        if (targetIndex !in entries.indices) return null
+        return HistoryFallbackTarget(targetIndex, entries[targetIndex])
+    }
+
+    fun commit(target: HistoryFallbackTarget, loadedUrl: String = target.url) {
+        require(target.index in entries.indices)
+        require(entries[target.index] == target.url)
+        index = target.index
+        observedUrl = loadedUrl
+    }
+
+    fun observeLoadedUrl(url: String) {
+        observedUrl = url
+    }
+}
+
+/**
+ * WebView instances are only accessed through BrowserControllerHandle on Dispatchers.Main.
+ * Weak keys avoid retaining closed foreground or per-conversation headless sessions.
+ */
+private val historyFallbackSnapshots = WeakHashMap<WebView, HistoryFallbackSnapshot>()
+
 /**
  * NATIVE when the native canGoBack()/canGoForward() check already agrees. Otherwise OFFSET
  * when [copyBackForwardList]'s index proves a real entry exists in that direction (back:
@@ -1398,6 +1491,10 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
                 // only affects what THIS call reports.
                 val navResult = runCatching {
                     withContext(Dispatchers.Main) {
+                        val liveUrl = webView.url.orEmpty()
+                        val fallback = historyFallbackSnapshots[webView]?.takeIf { it.matches(liveUrl) }
+                        if (fallback == null) historyFallbackSnapshots.remove(webView)
+
                         val list = webView.copyBackForwardList()
                         val canBack = webView.canGoBack()
                         val canForward = webView.canGoForward()
@@ -1406,27 +1503,45 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
                             "wv=${System.identityHashCode(webView)} dir=${if (forward) "forward" else "back"} " +
                                 "bfl=${list.size}/${list.currentIndex} canBack=$canBack canFwd=$canForward",
                         )
-                        when (resolveHistoryNav(forward, if (forward) canForward else canBack, list.currentIndex, list.size)) {
-                            HistoryNavMethod.NATIVE -> {
-                                if (forward) webView.goForward() else webView.goBack()
-                                true to false
-                            }
-                            HistoryNavMethod.OFFSET -> {
-                                // goBackOrForward(offset) proved inert on device: this WebView build's
-                                // GoToOffset honors the skippable flag too, so it silently no-ops. Load
-                                // the target history item's URL directly instead — a fresh load can't be
-                                // suppressed, at the cost of appending a new forward entry rather than
-                                // moving the index.
-                                val target = list.getItemAtIndex(list.currentIndex + (if (forward) 1 else -1))
-                                android.util.Log.i(
-                                    "BrowserNav",
-                                    "runHistoryNav: native nav refused, falling back to explicit history-item load: " +
-                                        target.url.take(120),
-                                )
-                                webView.loadUrl(target.url)
+
+                        val fallbackTarget = fallback?.target(forward)
+                        if (fallback != null) {
+                            if (fallbackTarget == null) {
+                                false to false
+                            } else {
+                                webView.loadUrl(fallbackTarget.url)
+                                fallback.commit(fallbackTarget)
                                 true to true
                             }
-                            HistoryNavMethod.NONE -> false to false
+                        } else {
+                            when (resolveHistoryNav(forward, if (forward) canForward else canBack, list.currentIndex, list.size)) {
+                                HistoryNavMethod.NATIVE -> {
+                                    if (forward) webView.goForward() else webView.goBack()
+                                    true to false
+                                }
+                                HistoryNavMethod.OFFSET -> {
+                                    // goBackOrForward(offset) proved inert on device: this WebView build's
+                                    // GoToOffset honors the skippable flag too, so it silently no-ops.
+                                    // Capture the unpolluted list before loading the target URL directly;
+                                    // the snapshot keeps forward/back usable after that load appends an entry.
+                                    val snapshot = HistoryFallbackSnapshot(
+                                        urls = List(list.size) { list.getItemAtIndex(it).url },
+                                        currentIndex = list.currentIndex,
+                                        currentUrl = liveUrl,
+                                    )
+                                    val target = checkNotNull(snapshot.target(forward))
+                                    android.util.Log.i(
+                                        "BrowserNav",
+                                        "runHistoryNav: native nav refused, falling back to explicit history-item load: " +
+                                            target.url.take(120),
+                                    )
+                                    webView.loadUrl(target.url)
+                                    snapshot.commit(target)
+                                    historyFallbackSnapshots[webView] = snapshot
+                                    true to true
+                                }
+                                HistoryNavMethod.NONE -> false to false
+                            }
                         }
                     }
                 }
@@ -1441,6 +1556,9 @@ private suspend fun runHistoryNav(toolName: String, forward: Boolean): JsonObjec
                 val usedOffsetFallback = navResult.getOrNull()?.second ?: false
                 if (ok) webView.awaitReadyState(8_000L)
                 val currentUrl = runCatching { webView.url }.getOrNull().orEmpty()
+                if (ok && usedOffsetFallback && currentUrl.isNotBlank()) {
+                    historyFallbackSnapshots[webView]?.observeLoadedUrl(currentUrl)
+                }
                 buildJsonObject {
                     put("success", ok)
                     put("current_url", currentUrl)

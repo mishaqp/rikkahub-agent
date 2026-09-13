@@ -1,11 +1,15 @@
 package me.rerere.rikkahub.data.api
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.decodeFromString
 import me.rerere.rikkahub.data.model.HfModelDetail
+import me.rerere.rikkahub.data.model.HfModelSearchResult
 import me.rerere.rikkahub.data.model.HfSibling
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -15,6 +19,27 @@ import org.junit.Test
  * `/api/models/{repo}` response on 2026-08-03 (see HfGatedSerializer's doc).
  */
 class HuggingFaceModelSearchTest {
+
+    @Test
+    fun `search propagates cancellation instead of reporting a stale failure`() = runBlocking {
+        val api = object : HuggingFaceAPI {
+            override suspend fun searchModels(
+                search: String,
+                filter: String,
+                limit: Int,
+            ): List<HfModelSearchResult> = throw CancellationException("superseded search")
+
+            override suspend fun getModel(repoId: String, blobs: Boolean): HfModelDetail =
+                error("getModel must not be called by search")
+        }
+
+        try {
+            HuggingFaceModelSearch.search(api, "Qwen GGUF")
+            fail("CancellationException must propagate")
+        } catch (e: CancellationException) {
+            assertEquals("superseded search", e.message)
+        }
+    }
 
     @Test
     fun `a public repo's siblings are filtered down to gguf files with a known size`() {

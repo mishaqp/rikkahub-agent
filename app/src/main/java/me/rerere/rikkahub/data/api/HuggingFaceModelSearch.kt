@@ -31,8 +31,14 @@ object HuggingFaceModelSearch {
 
     suspend fun search(api: HuggingFaceAPI, query: String): Result<List<HfModelSearchResult>> {
         if (query.isBlank()) return Result.success(emptyList())
-        return runCatching {
-            api.searchModels(search = query.trim(), filter = "gguf", limit = SEARCH_LIMIT)
+        return try {
+            Result.success(api.searchModels(search = query.trim(), filter = "gguf", limit = SEARCH_LIMIT))
+        } catch (e: CancellationException) {
+            // A new search cancels the previous one. Never turn structured cancellation into a
+            // stale red error in the provider UI or let the cancelled job keep mutating state.
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

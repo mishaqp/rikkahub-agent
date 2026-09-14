@@ -11,6 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.workflow.condition.ConditionEvaluator
@@ -354,14 +355,19 @@ class WorkflowActionRunner {
         val outputs = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
             val argsJson = action.args.toString()
-            val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
+            // Tool-name compatibility layer: a stored workflow definition keeps the tool name it
+            // was authored with. Resolve it to the canonical current name before the HARDLINE arm
+            // and before the lookup, so a merged/renamed tool stays fireable and the alias cannot
+            // stand in for a name the safety floor would otherwise have matched.
+            val canonicalToolName = ToolNameAliases.canonicalName(action.tool)
+            val hardlineReason = HardlineCommandGuard.checkTool(canonicalToolName, argsJson)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
                 return RunResult(success = false,
                     error = "action $idx: hardline:$hardlineReason",
                     summary = outputs.joinToString("\n"))
             }
-            val tool = availableTools.find { it.name == action.tool }
+            val tool = ToolNameAliases.resolveTool(availableTools, action.tool)
                 ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
             val out = try {
                 withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }

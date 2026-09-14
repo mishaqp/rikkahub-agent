@@ -20,6 +20,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.db.entity.ScheduledJobEntity
@@ -82,9 +83,14 @@ object ScheduleJobValidator {
                         ?: return ValidationError("missing_tool", "action $idx missing tool")
                     val args = el["args"] as? JsonObject
                         ?: return ValidationError("missing_args", "action $idx missing args object")
-                    if (toolName !in knownToolNames)
+                    // Validation accepts a legacy name when it resolves to a currently-registered
+                    // canonical one, so a job authored before a tool merge keeps validating. An
+                    // arbitrary unknown name is still rejected — this is a one-hop alias lookup,
+                    // not a widening of the accepted set.
+                    val canonicalToolName = ToolNameAliases.canonicalName(toolName)
+                    if (canonicalToolName !in knownToolNames)
                         return ValidationError("unknown_tool", "tool '$toolName' not registered for assistant")
-                    val hardline = HardlineCommandGuard.checkTool(toolName, args.toString())
+                    val hardline = HardlineCommandGuard.checkTool(canonicalToolName, args.toString())
                     if (hardline != null)
                         return ValidationError("hardline_blocked", "action $idx: $hardline")
                 }

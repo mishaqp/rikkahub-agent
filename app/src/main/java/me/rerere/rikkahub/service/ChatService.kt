@@ -79,6 +79,7 @@ import me.rerere.rikkahub.data.ai.ContextCompactionView
 import me.rerere.rikkahub.data.ai.TranslationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
@@ -1306,8 +1307,13 @@ class ChatService(
                     return RerunToolResult.Failure("tool has not completed its first run yet")
                 }
 
+                // Tool-name compatibility layer: resolve a legacy name to its canonical current
+                // form BEFORE the HARDLINE arm and the lookup, so a renamed tool stays runnable
+                // from an old conversation row without weakening the safety floor. This path
+                // never sends schemas to a model; it only re-runs one already-executed call.
+                val canonicalToolName = ToolNameAliases.canonicalName(toolPart.toolName)
                 val hardlineReason = me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
-                    .checkTool(toolPart.toolName, toolPart.input)
+                    .checkTool(canonicalToolName, toolPart.input)
                 if (hardlineReason != null) {
                     return RerunToolResult.Failure("blocked: $hardlineReason")
                 }
@@ -1319,7 +1325,7 @@ class ChatService(
                 ) ?: return RerunToolResult.Failure("no chat model selected")
 
                 val tools = buildToolsForRerun(assistant, conversationId, conversation, model, settings)
-                val tool = tools.firstOrNull { it.name == toolPart.toolName }
+                val tool = ToolNameAliases.resolveTool(tools, toolPart.toolName)
                     ?: return RerunToolResult.Failure("tool '${toolPart.toolName}' is not available")
 
                 toolPart to tool

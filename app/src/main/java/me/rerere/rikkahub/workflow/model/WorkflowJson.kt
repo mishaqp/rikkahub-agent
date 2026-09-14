@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.booleanOrNull
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 
 /**
  * Phase 12 — strict JSON schema validator + parser/serializer.
@@ -130,7 +131,11 @@ object WorkflowJson {
             // knownToolNames is the assistant's currently-registered tool surface. Empty set is
             // a sentinel meaning "skip the check" — used when reading stored definitions back
             // from disk where we trust that what was persisted was already validated.
-            if (knownToolNames.isNotEmpty() && toolName !in knownToolNames) {
+            // A legacy name that resolves to a currently-registered canonical name is accepted,
+            // so a workflow authored before a tool merge keeps validating; an arbitrary unknown
+            // name is still rejected. This is a one-hop alias lookup, not a widening of the set.
+            val canonicalToolName = ToolNameAliases.canonicalName(toolName)
+            if (knownToolNames.isNotEmpty() && canonicalToolName !in knownToolNames) {
                 return ParseResult.Err("unknown_tool",
                     "action $idx tool '$toolName' is not registered for this assistant")
             }
@@ -139,7 +144,7 @@ object WorkflowJson {
             // for v1 — without this guard, a malicious or hallucinated workflow definition
             // could trigger an unbounded chain across distinct workflow ids that the
             // per-workflow Mutex doesn't catch.
-            if (toolName == "workflow_run") {
+            if (canonicalToolName == "workflow_run") {
                 return ParseResult.Err("workflow_chaining_disabled",
                     "action $idx: workflow_run cannot be used as a workflow action (chaining is out-of-scope in v1)")
             }

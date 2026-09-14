@@ -56,6 +56,7 @@ import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
 import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
 import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -678,7 +679,14 @@ class GenerationHandler(
                 var hasPendingApproval = false
                 val updatedTools = ArrayList<UIMessagePart.Tool>(tools.size)
                 for (tool in tools) {
-                    val toolDef = toolsInternal.find { it.name == tool.toolName }
+                    // Tool-name compatibility layer: a tool name persisted by an older build
+                    // (or by a pre-merge model emission) resolves to the canonical current name
+                    // BEFORE anything policy-relevant looks at it. Resolving later would let a
+                    // legacy alias to a shell tool slip past the HARDLINE arm, which matches on
+                    // the name it is handed. The requested name is deliberately NOT rewritten —
+                    // it still travels in the message part for history and error envelopes.
+                    val canonicalToolName = ToolNameAliases.canonicalName(tool.toolName)
+                    val toolDef = toolsInternal.find { it.name == canonicalToolName }
                     // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
                     // fork bomb, …) are blocked unconditionally — even "Always Allow"
                     // can't override. We check BEFORE the auto-approval lookup so a
@@ -687,7 +695,7 @@ class GenerationHandler(
                     // reason, the regular Denied branch downstream emits an error
                     // envelope to the model without executing.
                     val hardlineReason = me.rerere.rikkahub.data.ai.tools
-                        .HardlineCommandGuard.checkTool(tool.toolName, tool.input)
+                        .HardlineCommandGuard.checkTool(canonicalToolName, tool.input)
                     val transformed = when {
                         hardlineReason != null && tool.approvalState is ToolApprovalState.Auto -> {
                             Log.w(TAG, "hardline-blocked ${tool.toolName}: $hardlineReason")
@@ -705,7 +713,7 @@ class GenerationHandler(
                             // resolved set). Costs a DataStore.first() per tool but tools
                             // are typically <5 per turn so the latency is negligible, and
                             // freshness matters for the YOLO toggle / mid-iteration grants.
-                            if (isToolAutoApproved(tool.toolName)) {
+                            if (isToolAutoApproved(canonicalToolName)) {
                                 tool  // leave as Auto so the executor runs it without prompting
                             } else {
                                 hasPendingApproval = true
@@ -790,6 +798,12 @@ class GenerationHandler(
                     else -> {
                         // Auto or Approved - execute the tool.
                         //
+                        // Tool-name compatibility layer (execution path). This loop is reached
+                        // both from the approval loop above and from the resume path, which
+                        // rebuilds its list from persisted message parts — so the canonical name
+                        // is resolved here again rather than inherited from the earlier scope.
+                        val canonicalToolName = ToolNameAliases.canonicalName(tool.toolName)
+                        //
                         // Defence-in-depth HARDLINE re-check: the primary check at line ~442
                         // only runs when approvalState is Auto (the generation step that just
                         // proposed the tool). On the resume path (pendingTools branch above)
@@ -798,7 +812,7 @@ class GenerationHandler(
                         // state from an old DB row (pre-hardline schema, direct DB edit) can
                         // never execute via the resume path.
                         val resumeHardlineReason = me.rerere.rikkahub.data.ai.tools
-                            .HardlineCommandGuard.checkTool(tool.toolName, tool.input)
+                            .HardlineCommandGuard.checkTool(canonicalToolName, tool.input)
                         if (resumeHardlineReason != null) {
                             Log.w(TAG, "generateText: resume-path hardline re-check blocked ${tool.toolName}: $resumeHardlineReason")
                             executedTools += tool.copy(
@@ -820,7 +834,7 @@ class GenerationHandler(
                         // tool with the same args multiple times in this turn. Refuse a
                         // repeat run and inject a "loop_detected" envelope so the model has
                         // to pivot to a different approach. Cost safety net.
-                        val signature = tool.toolName + "::" + tool.input
+                        val signature = canonicalToolName + "::" + tool.input
                         // "This turn" = since the most recent user message. Earlier
                         // identical calls in PREVIOUS turns aren't the model flailing
                         // now — they're history, and counting them produces a confusing
@@ -839,11 +853,19 @@ class GenerationHandler(
                                 .toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
                             msg.parts.filterIsInstance<UIMessagePart.Tool>()
                                 .filter { it.isExecuted }
-                                .map { PriorToolCall(it.toolName, it.toolName + "::" + it.input, epochMs) }
+                                // Canonicalise prior calls too, so a turn that mixed a legacy and
+                                // a canonical spelling of the same action counts as ONE tool
+                                // rather than two — otherwise the guard would see two distinct
+                                // signatures and never trip.
+                                .map { PriorToolCall(
+                                    it.toolName,
+                                    ToolNameAliases.canonicalName(it.toolName) + "::" + it.input,
+                                    epochMs,
+                                ) }
                         }
                         val loopDecision = LoopGuard.evaluate(
                             priorCalls = priorCalls,
-                            toolName = tool.toolName,
+                            toolName = canonicalToolName,
                             signature = signature,
                             nowMs = System.currentTimeMillis(),
                         )
@@ -932,7 +954,7 @@ class GenerationHandler(
                         // this is the self-diagnosing surface for a server that connects and
                         // lists tools but contributes zero entries to the dispatch list, e.g.
                         // a newly mcp_add-ed server never enabled for this assistant).
-                        val toolDef = toolsInternal.find { toolDef -> toolDef.name == tool.toolName }
+                        val toolDef = toolsInternal.find { toolDef -> toolDef.name == canonicalToolName }
                         if (toolDef == null) {
                             Log.w(TAG, "tool ${tool.toolName} not found among ${toolsInternal.size} tools available this turn")
                             executedTools += tool.copy(

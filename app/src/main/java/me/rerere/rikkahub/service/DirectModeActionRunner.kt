@@ -12,6 +12,7 @@ import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 
 /**
  * Parses + executes mode='direct' action sequences. Each action is a single
@@ -76,12 +77,17 @@ class DirectModeActionRunner(
         action: Action,
         availableTools: List<Tool>,
     ): StepResult {
-        val hardlineReason = HardlineCommandGuard.checkTool(action.tool, action.args.toString())
+        // Tool-name compatibility layer: a direct-mode job persists its action list at creation
+        // time, so an action naming a tool that has since been renamed resolves through the
+        // canonical table here. Resolution happens BEFORE the HARDLINE arm so a legacy alias to
+        // a shell tool is still judged by the canonical name's rules.
+        val canonicalToolName = ToolNameAliases.canonicalName(action.tool)
+        val hardlineReason = HardlineCommandGuard.checkTool(canonicalToolName, action.args.toString())
         if (hardlineReason != null) {
             Log.w(TAG, "direct-mode hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
             return StepResult.HardlineBlocked(hardlineReason)
         }
-        val tool = availableTools.find { it.name == action.tool }
+        val tool = ToolNameAliases.resolveTool(availableTools, action.tool)
             ?: return StepResult.UnknownTool(action.tool)
         return try {
             val out = withTimeoutOrNull(60_000L) { tool.execute(action.args) }

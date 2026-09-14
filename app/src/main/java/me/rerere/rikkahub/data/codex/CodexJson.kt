@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.codex
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -38,19 +39,36 @@ internal fun parseCodexIdentity(idToken: String, json: Json): CodexIdentity {
 
 internal fun parseCodexUsage(jsonObject: JsonObject): CodexUsageSnapshot {
     val rateLimit = jsonObject["rate_limit"] as? JsonObject
+    val additional = (jsonObject["additional_rate_limits"] as? JsonArray)
+        .orEmpty()
+        .mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val id = item["metered_feature"]?.jsonPrimitive?.contentOrNull
+                ?.normalizeCodexLimitId()
+                ?: return@mapNotNull null
+            val nested = item["rate_limit"] as? JsonObject ?: return@mapNotNull null
+            val limit = CodexUsageLimit(
+                name = item["limit_name"]?.jsonPrimitive?.contentOrNull,
+                primary = (nested["primary_window"] as? JsonObject)?.toUsageWindow(),
+                secondary = (nested["secondary_window"] as? JsonObject)?.toUsageWindow(),
+            )
+            id to limit
+        }
+        .toMap()
     return CodexUsageSnapshot(
         primary = (rateLimit?.get("primary_window") as? JsonObject)?.toUsageWindow(),
         secondary = (rateLimit?.get("secondary_window") as? JsonObject)?.toUsageWindow(),
+        additional = additional,
     )
 }
 
 internal fun parseCodexUsage(headers: Headers): CodexUsageSnapshot? {
     fun window(prefix: String): CodexUsageWindow? {
-        val used = headers["x-codex-$prefix-used-percent"]?.toDoubleOrNull() ?: return null
-        val windowMinutes = headers["x-codex-$prefix-window-minutes"]?.toLongOrNull()
+        val used = headers["$prefix-used-percent"]?.toDoubleOrNull() ?: return null
+        val windowMinutes = headers["$prefix-window-minutes"]?.toLongOrNull()
         if (windowMinutes != null && windowMinutes <= 0) return null
-        val resetsAt = headers["x-codex-$prefix-reset-at"]?.toLongOrNull()
-            ?: headers["x-codex-$prefix-reset-after-seconds"]?.toLongOrNull()
+        val resetsAt = headers["$prefix-reset-at"]?.toLongOrNull()
+            ?: headers["$prefix-reset-after-seconds"]?.toLongOrNull()
                 ?.let { System.currentTimeMillis() / 1000 + it }
         return CodexUsageWindow(
             usedPercent = used,
@@ -58,11 +76,42 @@ internal fun parseCodexUsage(headers: Headers): CodexUsageSnapshot? {
             resetsAt = resetsAt,
         )
     }
-    val primary = window("primary")
-    val secondary = window("secondary")
-    if (primary == null && secondary == null) return null
-    return CodexUsageSnapshot(primary = primary, secondary = secondary)
+    val primary = window("x-codex-primary")
+    val secondary = window("x-codex-secondary")
+    val additionalIds = headers.names().mapNotNull { rawName ->
+        val name = rawName.lowercase()
+        val limit = name
+            .removePrefix("x-")
+            .removeSuffix("-primary-used-percent")
+        if (
+            name.startsWith("x-") &&
+            name.endsWith("-primary-used-percent") &&
+            limit != "codex"
+        ) {
+            limit.normalizeCodexLimitId()
+        } else {
+            null
+        }
+    }.toSet()
+    val additional = additionalIds.mapNotNull { id ->
+        val prefix = "x-${id.replace('_', '-')}"
+        val limit = CodexUsageLimit(
+            name = headers["$prefix-limit-name"],
+            primary = window("$prefix-primary"),
+            secondary = window("$prefix-secondary"),
+        )
+        if (limit.primary == null && limit.secondary == null) null else id to limit
+    }.toMap()
+    if (primary == null && secondary == null && additional.isEmpty()) return null
+    return CodexUsageSnapshot(
+        primary = primary,
+        secondary = secondary,
+        additional = additional,
+    )
 }
+
+private fun String.normalizeCodexLimitId(): String =
+    trim().lowercase().replace('-', '_')
 
 private fun JsonObject.toUsageWindow(): CodexUsageWindow? {
     val used = this["used_percent"]?.jsonPrimitive?.doubleOrNull ?: return null

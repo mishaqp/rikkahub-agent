@@ -256,8 +256,8 @@ class CodexOAuthManager(
         const val CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
         const val TOKEN_URL = "https://auth.openai.com/oauth/token"
         const val AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
-        const val DEFAULT_SCOPES = "openid profile email offline_access"
-        const val REFRESH_SCOPES = "openid profile email"
+        const val DEFAULT_SCOPES =
+            "openid profile email offline_access api.connectors.read api.connectors.invoke"
         private val CALLBACK_PORTS = listOf(1455, 1457)
     }
 }

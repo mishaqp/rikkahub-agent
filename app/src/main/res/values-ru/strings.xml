@@ -547,6 +547,10 @@
   <string name="regenerate_confirm_message">Вы уверены, что хотите перегенерировать это сообщение?</string>
   <string name="render_with_webview">Отображать в WebView</string>
   <string name="rikkahub_provider_description">Официальный бесплатный AI-сервис, использующий средства спонсоров для предоставления новым пользователям бесплатных моделей в качестве резерва; API-ключ не требуется. Действуют строгие ограничения по частоте запросов. Если у вас есть собственный провайдер, используйте его по возможности.</string>
+  <string name="clodex_provider_description">Один API-ключ для GPT, Claude, Gemini, Grok и других моделей. Работает через OpenAI-совместимый Responses API CLODEX: добавьте ключ, затем выберите модели на вкладке «Модели».</string>
+  <string name="clodex_provider_short_description">OpenAI-совместимый · Responses API</string>
+  <string name="clodex_provider_dashboard">Личный кабинет</string>
+  <string name="clodex_provider_docs">Документация API</string>
   <string name="safe_mode_assistants">Помощники</string>
   <string name="safe_mode_copy">Копировать</string>
   <string name="safe_mode_crash_report">Отчёт о сбое</string>
@@ -1924,4 +1928,23 @@
   <string name="workspace_detail_compatibility_mode">Режим совместимости</string>
   <string name="workspace_detail_compatibility_mode_desc">Попробуйте включить это, если терминал не запускается. Это может снизить производительность. Применяется к новым вкладкам терминала и последующим командам.</string>
   <string name="workspace_detail_settings_save_failed">Не удалось сохранить настройки</string>
+  <string name="local_llm_llamacpp_catalog_title">Доступные модели</string>
+  <string name="local_llm_llamacpp_catalog_subtitle">Проверенные модели GGUF с шаблоном чата для вызова инструментов. Выберите модель для установки в одно касание.</string>
+  <string name="local_llm_llamacpp_import_action">Установить имеющийся файл GGUF</string>
+  <string name="local_llm_hf_search_title">Поиск в Hugging Face</string>
+  <string name="local_llm_hf_search_placeholder">Название модели, например Qwen3</string>
+  <string name="local_llm_hf_search_action">Найти</string>
+  <string name="local_llm_hf_search_no_results">Репозитории GGUF не найдены</string>
+  <string name="local_llm_hf_search_failed_format">Ошибка поиска: %1$s</string>
+  <string name="local_llm_hf_downloads_format">Скачиваний: %1$d</string>
+  <string name="local_llm_hf_back_to_results">К результатам поиска</string>
+  <string name="local_llm_hf_requires_access">Этот репозиторий ограничен или приватный. Нужен токен доступа, который приложение пока не поддерживает. Выберите публичный репозиторий.</string>
+  <string name="local_llm_hf_files_error_format">Не удалось получить список файлов: %1$s</string>
+  <string name="local_llm_hf_no_gguf_files">В этом репозитории нет файлов .gguf</string>
+  <string name="local_llm_hf_file_size_gb_format">%1$.2f ГБ</string>
+  <string name="local_llm_hf_loading_files">Загрузка файлов…</string>
+  <string name="doctor_check_llamacpp_models">Модели llama.cpp</string>
+  <string name="doctor_detail_no_llama_models">Модели llama.cpp не установлены.</string>
+  <string name="doctor_fix_open_local_llama">Открыть Local · llama.cpp</string>
+  <string name="doctor_detail_llamacpp_missing">%1$d из %2$d установленных моделей llama.cpp отсутствуют на диске: %3$s. Файл мог быть перемещён, удалён или накопитель отключён.</string>
 </resources>

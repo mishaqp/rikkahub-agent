@@ -103,10 +103,11 @@ class ModelInstallTest {
         assertEquals(false, ModelInstall.isValidDownloadUrl("file:///etc/passwd"))
     }
 
-    @Test fun `runtimeForExtension accepts LiteRT and rejects unsupported formats`() {
+    @Test fun `runtimeForExtension routes shipped formats and rejects unsupported formats`() {
         assertEquals(LocalRuntime.LiteRT, ModelInstall.runtimeForExtension("litertlm"))
         assertEquals(LocalRuntime.LiteRT, ModelInstall.runtimeForExtension("LITERTLM"))
-        assertEquals(null, ModelInstall.runtimeForExtension("gguf"))
+        assertEquals(LocalRuntime.LlamaCpp, ModelInstall.runtimeForExtension("gguf"))
+        assertEquals(LocalRuntime.LlamaCpp, ModelInstall.runtimeForExtension("GGUF"))
         assertEquals(null, ModelInstall.runtimeForExtension("task"))
         assertEquals(null, ModelInstall.runtimeForExtension("tflite"))
     }

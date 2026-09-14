@@ -16,6 +16,14 @@ class ProviderRequirementsTest {
     }
 
     @Test
+    fun `llama cpp provider reports its on-device CPU-only requirement`() {
+        val requirements = ProviderRequirement.from(ProviderSetting.LlamaCppLocal())
+
+        assertEquals(1, requirements.size)
+        assertEquals(TagType.INFO, requirements.single().severity)
+    }
+
+    @Test
     fun `openai provider has no special requirements`() {
         assertTrue(ProviderRequirement.from(ProviderSetting.OpenAI()).isEmpty())
     }

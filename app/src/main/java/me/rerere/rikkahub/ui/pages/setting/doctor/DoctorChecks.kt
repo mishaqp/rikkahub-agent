@@ -1079,6 +1079,9 @@ class DoctorChecks(
                     // been loaded/downloaded. A disabled provider with no models is the factory
                     // default — don't count it.
                     is me.rerere.ai.provider.ProviderSetting.LiteRtLocal -> p.enabled && p.models.isNotEmpty()
+                    // Local provider (llama.cpp): usable when enabled AND at least one model
+                    // has been loaded, same criterion as LiteRT above.
+                    is me.rerere.ai.provider.ProviderSetting.LlamaCppLocal -> p.enabled && p.models.isNotEmpty()
                     is me.rerere.ai.provider.ProviderSetting.Codex -> p.enabled  // OAuth, no API key
                     is me.rerere.ai.provider.ProviderSetting.Grok -> p.enabled  // OAuth, no API key
                     is me.rerere.ai.provider.ProviderSetting.GeminiOAuth -> p.enabled  // OAuth, no API key
@@ -1184,6 +1187,44 @@ class DoctorChecks(
                         )
                     )
                 }
+            }
+        }
+        // llama.cpp installed-model check. Unlike LiteRT, this runtime is CPU-only with no
+        // vision encoder and nothing to probe for an accelerator, so there is no analogue
+        // to net.litert_accel/_perf/_vision here — those would be reporting on things that
+        // cannot vary on this build. The one thing that genuinely can go wrong: a model
+        // registered in prefs whose backing file was moved, deleted, or lives on a volume
+        // that got unmounted. Own id (net.llamacpp_models) so it can't collide with the
+        // net.litert_* rows above.
+        runCatching {
+            val prefs = localRuntimePreferences
+            if (prefs != null) {
+                val installed = prefs.installedModels(me.rerere.locallm.LocalRuntime.LlamaCpp)
+                val status = llamaCppModelStatus(installed)
+                val detail = when {
+                    status.total == 0 -> context.getString(R.string.doctor_detail_no_llama_models)
+                    status.missing.isEmpty() ->
+                        "${status.total} model(s) installed, all present on disk."
+                    else ->
+                        context.getString(R.string.doctor_detail_llamacpp_missing, status.missing.size, status.total, status.missing.joinToString(", "))
+                }
+                add(
+                    DoctorCheck(
+                        id = "net.llamacpp_models",
+                        category = DoctorCategory.Network,
+                        label = context.getString(R.string.doctor_check_llamacpp_models),
+                        detail = detail,
+                        severity = when {
+                            status.total == 0 -> Severity.INFO
+                            status.missing.isEmpty() -> Severity.OK
+                            else -> Severity.WARN
+                        },
+                        fix = if (status.missing.isNotEmpty()) FixAction.OpenAppRoute(
+                            context.getString(R.string.doctor_fix_open_local_llama),
+                            AppRouteKey.SettingProvider,
+                        ) else null,
+                    )
+                )
             }
         }
         // DNS sanity — confirms the OkHttp clients aren't stuck on a stale resolver.
@@ -1768,8 +1809,25 @@ class DoctorChecks(
 }
 
 /**
+ * Pure decision logic backing the "net.llamacpp_models" row: given the filename ->
+ * absolute-path map from [me.rerere.locallm.LocalRuntimePreferences.installedModels],
+ * report the total installed count and which filenames' backing file is no longer on
+ * disk. Extracted to a top-level function (rather than left inline) so it's unit-testable
+ * on the JVM without an Android Context — [DoctorChecks] itself needs one for every other
+ * check, which rules out constructing it directly in a plain JUnit test.
+ */
+internal data class LlamaCppModelStatus(val total: Int, val missing: List<String>)
+
+internal fun llamaCppModelStatus(installed: Map<String, String>): LlamaCppModelStatus =
+    LlamaCppModelStatus(
+        total = installed.size,
+        missing = installed.filterValues { path -> !File(path).exists() }.keys.sorted(),
+    )
+
+/**
  * Pure decision logic backing the "storage.gallery_orphans" row: given the resolved
  * absolute paths of every generated-image DB record, report the total and how many no
+ * longer have a backing file on disk (the #39 bug class). Mirrors [llamaCppModelStatus]'s
  * shape so both are unit-testable on the JVM without a Context.
  */
 internal data class GalleryOrphanStatus(val total: Int, val orphanCount: Int)

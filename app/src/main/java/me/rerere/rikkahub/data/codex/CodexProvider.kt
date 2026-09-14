@@ -53,7 +53,7 @@ class CodexProvider(
             // "No available Codex account" while the account is still signed in.
             val account = repository.acquireAccountForMetadata()
             val request = Request.Builder()
-                .url("$CODEX_API_BASE/models?client_version=$CLIENT_VERSION")
+                .url("$CODEX_API_BASE/models?client_version=$CODEX_CLIENT_VERSION")
                 .codexHeaders(account)
                 .get()
                 .build()
@@ -89,6 +89,8 @@ class CodexProvider(
                         add(ModelAbility.TOOL)
                         if (
                             item["supported_reasoning_levels"]?.jsonArray?.isNotEmpty() == true ||
+                            item["supports_reasoning_summary_parameter"]
+                                ?.jsonPrimitive?.booleanOrNull == true ||
                             item["supports_reasoning_summaries"]?.jsonPrimitive?.booleanOrNull == true
                         ) {
                             add(ModelAbility.REASONING)
@@ -103,7 +105,7 @@ class CodexProvider(
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): TextGenerationResult {
-        val account = repository.acquireAccount()
+        val account = repository.acquireAccount(params.model.modelId)
         return responseApiFor(account).generateText(
             providerSetting = syntheticSetting(providerSetting, account),
             messages = withDefaultInstructions(messages),
@@ -116,7 +118,7 @@ class CodexProvider(
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): Flow<StreamChunk> {
-        val account = repository.acquireAccount()
+        val account = repository.acquireAccount(params.model.modelId)
         return responseApiFor(account).streamText(
             providerSetting = syntheticSetting(providerSetting, account),
             messages = withDefaultInstructions(messages),
@@ -132,11 +134,11 @@ class CodexProvider(
     }
 
     private fun Request.Builder.codexHeaders(account: CodexAccount): Request.Builder {
-        return header("Authorization", "Bearer ${account.accessToken}")
-            .header("ChatGPT-Account-Id", account.chatgptAccountId)
-            .header("OpenAI-Beta", "responses=experimental")
-            .header("originator", "codex_cli_rs")
-            .header("User-Agent", CODEX_USER_AGENT)
+        header("Authorization", "Bearer ${account.accessToken}")
+        codexProtocolHeaders(account.chatgptAccountId).forEach { protocolHeader ->
+            header(protocolHeader.name, protocolHeader.value)
+        }
+        return this
     }
 
     // apiKey = the account's own OAuth token, so ResponseAPI's normal "Authorization: Bearer
@@ -167,25 +169,20 @@ class CodexProvider(
         account: CodexAccount,
         stream: Boolean,
     ): TextGenerationParams {
-        val reasoningEffort = params.model.abilities
-            .takeIf { it.contains(ModelAbility.REASONING) }
-            ?.let { codexReasoningEffort(params.reasoningLevel) }
+        val reasoningOverride = codexReasoningOverride(
+            modelId = params.model.modelId,
+            level = params.reasoningLevel,
+            supportsReasoning = params.model.abilities.contains(ModelAbility.REASONING),
+        )
         return params.copy(
-            customHeaders = params.customHeaders + buildList {
-                add(CustomHeader("ChatGPT-Account-Id", account.chatgptAccountId))
-                add(CustomHeader("OpenAI-Beta", "responses=experimental"))
-                add(CustomHeader("originator", "codex_cli_rs"))
-                add(CustomHeader("User-Agent", CODEX_USER_AGENT))
-                if (stream) add(CustomHeader("Accept", "text/event-stream"))
-            },
+            customHeaders = params.customHeaders.filterNot { header ->
+                header.name.lowercase() in CODEX_RESERVED_HEADER_NAMES
+            } + codexProtocolHeaders(account.chatgptAccountId, stream = stream),
             customBody = params.customBody + listOfNotNull(
-                reasoningEffort?.let { effort ->
+                reasoningOverride?.let { reasoning ->
                     CustomBody(
                         key = "reasoning",
-                        value = buildJsonObject {
-                            put("effort", effort)
-                            put("summary", "auto")
-                        },
+                        value = reasoning,
                     )
                 },
             ),
@@ -230,15 +227,54 @@ class CodexProvider(
 
     private companion object {
         const val CODEX_API_BASE = "${CodexAccountRepository.CODEX_BASE_URL}/codex"
-        const val CLIENT_VERSION = "0.153.4"
-
-        // The Codex backend routes model availability using the advertised Codex client version
-        // and User-Agent. Keep both aligned with a current stable Codex CLI release so newly
-        // eligible models are not hidden behind an obsolete minimum-client-version gate.
-        val CODEX_USER_AGENT =
-            "codex_cli_rs/$CLIENT_VERSION (Android ${Build.VERSION.RELEASE}; " +
-                "${Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64"})"
         const val DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
+    }
+}
+
+internal const val CODEX_CLIENT_VERSION = "0.154.0"
+internal const val CODEX_ORIGINATOR = "codex_cli_rs"
+private val CODEX_RESERVED_HEADER_NAMES = setOf(
+    "accept",
+    "authorization",
+    "chatgpt-account-id",
+    "openai-beta",
+    "originator",
+    "user-agent",
+    "version",
+)
+
+// The Codex backend routes model availability using the advertised client version and User-Agent.
+// Keep both aligned with the current stable Codex CLI so eligible models are not hidden behind an
+// obsolete minimum-client-version gate.
+internal fun codexUserAgent(): String =
+    "$CODEX_ORIGINATOR/$CODEX_CLIENT_VERSION (Android ${Build.VERSION.RELEASE}; " +
+        "${Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64"})"
+
+internal fun codexProtocolHeaders(
+    chatgptAccountId: String,
+    stream: Boolean = false,
+    userAgent: String = codexUserAgent(),
+): List<CustomHeader> = buildList {
+    add(CustomHeader("ChatGPT-Account-Id", chatgptAccountId))
+    add(CustomHeader("version", CODEX_CLIENT_VERSION))
+    add(CustomHeader("originator", CODEX_ORIGINATOR))
+    add(CustomHeader("User-Agent", userAgent))
+    if (stream) add(CustomHeader("Accept", "text/event-stream"))
+}
+
+internal fun codexReasoningOverride(
+    modelId: String,
+    level: ReasoningLevel,
+    supportsReasoning: Boolean,
+): JsonObject? {
+    if (!supportsReasoning) return null
+    val effort = codexReasoningEffort(level) ?: return null
+    if (isCodexSparkModel(modelId) && level == ReasoningLevel.OFF) return null
+    return buildJsonObject {
+        put("effort", effort)
+        if (!isCodexSparkModel(modelId)) {
+            put("summary", "auto")
+        }
     }
 }
 

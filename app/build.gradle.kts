@@ -47,7 +47,7 @@ android {
         minSdk = 26
         targetSdk = 37
             versionCode = releaseVersionCode
-            versionName = "2.5.1-agent.2"
+            versionName = "2.5.1-agent.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -353,6 +353,7 @@ dependencies {
     // modules
     implementation(project(":ai"))
     implementation(project(":local-llm"))
+    implementation(project(":llama-cpp"))
     implementation(project(":web"))
     implementation(project(":document"))
     implementation(project(":highlight"))

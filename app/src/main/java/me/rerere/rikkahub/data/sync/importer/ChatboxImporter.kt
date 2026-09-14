@@ -682,6 +682,7 @@ object ChatboxImporter {
         is ProviderSetting.Claude -> "claude"
         is ProviderSetting.AICore -> "aicore"
         is ProviderSetting.LiteRtLocal -> "litert"
+        is ProviderSetting.LlamaCppLocal -> "llamacpp"
         is ProviderSetting.Codex -> "codex"
         is ProviderSetting.Grok -> "grok"
         is ProviderSetting.GeminiOAuth -> "gemini_oauth"

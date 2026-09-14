@@ -8,13 +8,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.common.http.await
-import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class CodexAccountRepository internal constructor(
     private val store: CodexCredentialStore,
@@ -81,15 +84,16 @@ class CodexAccountRepository internal constructor(
         account
     }
 
-    suspend fun acquireAccount(): CodexAccount = mutex.withLock {
+    suspend fun acquireAccount(modelId: String? = null): CodexAccount = mutex.withLock {
         if (state.accounts.isEmpty()) error("No Codex account is signed in")
         repeat(state.accounts.size) {
             val index = selectCodexAccountIndex(
                 accounts = state.accounts,
                 startIndex = state.nextAccountIndex,
+                modelId = modelId,
             ) ?: error("No available Codex account")
             val candidate = state.accounts[index]
-            if (!candidate.isAvailable()) return@repeat
+            if (!candidate.isAvailable(modelId = modelId)) return@repeat
             updateState(state.copy(nextAccountIndex = (index + 1) % state.accounts.size))
             val fresh = runCatching { ensureFreshLocked(candidate) }.getOrNull() ?: return@repeat
             return fresh
@@ -118,7 +122,9 @@ class CodexAccountRepository internal constructor(
     }
 
     suspend fun updateUsage(accountId: String, usage: CodexUsageSnapshot) = mutex.withLock {
-        replaceAccount(accountId) { it.copy(usage = usage) }
+        replaceAccount(accountId) { account ->
+            account.copy(usage = account.usage?.mergeWith(usage) ?: usage)
+        }
     }
 
     suspend fun setEnabled(accountId: String, enabled: Boolean) = mutex.withLock {
@@ -159,18 +165,7 @@ class CodexAccountRepository internal constructor(
             return account
         }
         val response = withContext(Dispatchers.IO) {
-            val body = FormBody.Builder()
-                .add("grant_type", "refresh_token")
-                .add("client_id", CodexOAuthManager.CLIENT_ID)
-                .add("refresh_token", account.refreshToken)
-                .add("scope", CodexOAuthManager.REFRESH_SCOPES)
-                .build()
-            client.newCall(
-                Request.Builder()
-                    .url(CodexOAuthManager.TOKEN_URL)
-                    .post(body)
-                    .build()
-            ).await()
+            client.newCall(buildCodexRefreshRequest(account.refreshToken)).await()
         }
         val responseBody = response.body.string()
         if (!response.isSuccessful) {
@@ -257,25 +252,67 @@ internal fun isCodexRefreshAuthenticationFailure(
     json: Json,
 ): Boolean {
     if (statusCode == 401) return true
-    if (statusCode != 400) return false
     val errorCode = runCatching {
-        json.parseToJsonElement(responseBody).jsonObject["error"]?.jsonPrimitive?.contentOrNull
-    }.getOrNull()
-    return errorCode == "invalid_grant" || errorCode == "invalid_token"
+        val payload = json.parseToJsonElement(responseBody).jsonObject
+        val error = payload["error"]
+        when (error) {
+            is kotlinx.serialization.json.JsonObject ->
+                error["code"]?.jsonPrimitive?.contentOrNull
+            is kotlinx.serialization.json.JsonPrimitive -> error.contentOrNull
+            else -> null
+        } ?: payload["code"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()?.lowercase()
+    return errorCode in setOf(
+        "refresh_token_expired",
+        "refresh_token_reused",
+        "refresh_token_invalidated",
+    ) || (statusCode == 400 && errorCode == "invalid_grant")
 }
 
 internal fun selectCodexAccountIndex(
     accounts: List<CodexAccount>,
     startIndex: Int,
     nowMillis: Long = System.currentTimeMillis(),
+    modelId: String? = null,
 ): Int? {
     if (accounts.isEmpty()) return null
     repeat(accounts.size) { offset ->
         val index = (startIndex + offset).mod(accounts.size)
-        if (accounts[index].isAvailable(nowMillis)) return index
+        if (accounts[index].isAvailable(modelId = modelId, nowMillis = nowMillis)) return index
     }
     return null
 }
+
+private fun CodexUsageSnapshot.mergeWith(update: CodexUsageSnapshot): CodexUsageSnapshot = copy(
+    primary = update.primary ?: primary,
+    secondary = update.secondary ?: secondary,
+    additional = additional + update.additional,
+    updatedAt = update.updatedAt,
+)
+
+internal fun buildCodexRefreshBody(refreshToken: String) =
+    buildJsonObject {
+        put("client_id", CodexOAuthManager.CLIENT_ID)
+        put("grant_type", "refresh_token")
+        put("refresh_token", refreshToken)
+    }
+
+// Current Codex sends refresh as JSON without repeating the authorization scope. Keeping the old
+// form request can fail an otherwise healthy login refresh.
+internal fun buildCodexRefreshRequest(
+    refreshToken: String,
+    userAgent: String = codexUserAgent(),
+): Request = Request.Builder()
+    .url(CodexOAuthManager.TOKEN_URL)
+    .header("originator", CODEX_ORIGINATOR)
+    .header("User-Agent", userAgent)
+    .post(
+        buildCodexRefreshBody(refreshToken)
+            .toString()
+            .encodeToByteArray()
+            .toRequestBody("application/json".toMediaType())
+    )
+    .build()
 
 internal fun selectCodexMetadataAccountIndex(
     accounts: List<CodexAccount>,

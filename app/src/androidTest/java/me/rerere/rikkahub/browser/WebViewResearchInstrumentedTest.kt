@@ -25,6 +25,8 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.local.browserGetTextTool
 import me.rerere.rikkahub.data.ai.tools.local.webExtractTool
 import me.rerere.search.extract.webSourceCache
+import me.rerere.rikkahub.data.ai.tools.local.BROWSER_GET_TEXT_DEFAULT_MAX_CHARS
+import me.rerere.search.extract.QueryFocusedExtractor
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -363,6 +365,159 @@ class WebViewResearchInstrumentedTest {
                 "(stored=${reused.str("text").orEmpty().length}, readability=$readabilityChars)",
             reused.str("text").orEmpty().length < readabilityChars,
         )
+        assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
+    }
+
+    // ---- Regression: `hidden="until-found"` is a collapse, not a hide --------------------------
+
+    /**
+     * The bug this suite pins down: mobile Wikipedia/Minerva keeps the prose of later sections in
+     * the DOM behind `hidden="until-found"` (which Chromium implements as `content-visibility:
+     * hidden`). `node.hidden` is truthy for that value, so the semantic traversal dropped whole
+     * sections *before* ranking and `focus` could never reach them.
+     *
+     * The assertion set is deliberately complete:
+     *
+     *  1. the legacy rendered answer is unchanged (`innerText` still excludes the collapsed prose);
+     *  2. ordinary `hidden`, `inert`, `aria-hidden=true`, `display:none`, `visibility:hidden`, a
+     *     non-semantic `content-visibility:hidden` container and a bare `hidden="until-found"`
+     *     outside a semantic container all stay out of the corpus;
+     *  3. `hidden="until-found"` inside a semantic/collapsible container *is* ranked - by selection,
+     *     not by fallback - and lands in the cached `source_id`, so reuse sees it too;
+     *  4. the token budget is untouched: the corpus grows, the answer does not.
+     */
+    @Test
+    fun untilFoundCollapsedSectionsAreRankedWhileRealHiddenNodesStayOut() {
+        val net = CountingTransport()
+        val leaks = listOf(
+            HIDDEN_SENTINEL,
+            INERT_LEAK_MARKER,
+            ARIA_LEAK_MARKER,
+            DISPLAY_NONE_SENTINEL,
+            VISIBILITY_HIDDEN_LEAK_MARKER,
+            CSS_HIDDEN_LEAK_MARKER,
+            BARE_UNTIL_FOUND_LEAK_MARKER,
+            SCRIPT_SENTINEL,
+            STYLE_SENTINEL,
+            PASSWORD_SENTINEL,
+        )
+
+        val (visible, focused, budgeted) = withBoundPage(untilFoundCollapsedPageHtml()) {
+            val visibleRead = readText(buildJsonObject {
+                put("extract_mode", JsonPrimitive("raw"))
+                put("max_chars", JsonPrimitive(8000))
+            })
+            val focusedRead = readText(buildJsonObject {
+                put("extract_mode", JsonPrimitive("raw"))
+                put("focus", JsonPrimitive(UNTIL_FOUND_DEEP_MARKER))
+            })
+            // A window smaller than the focused budget, to prove the caller's cap still wins.
+            val budgetedRead = readText(buildJsonObject {
+                put("extract_mode", JsonPrimitive("raw"))
+                put("focus", JsonPrimitive(UNTIL_FOUND_DEEP_MARKER))
+                put("max_chars", JsonPrimitive(300))
+            })
+            Triple(visibleRead, focusedRead, budgetedRead)
+        }
+
+        // (1) The visible answer never changed: `innerText` collapses nothing on its own.
+        assertTrue(
+            "the visible prose must still be returned; envelope: $visible",
+            visible.str("text").orEmpty().contains(UNTIL_FOUND_VISIBLE_MARKER),
+        )
+        assertFalse(
+            "raw keeps the legacy rendered answer; until-found prose must stay out of it",
+            visible.str("text").orEmpty().contains(UNTIL_FOUND_DEEP_MARKER),
+        )
+        assertTrue(
+            "the legacy answer stays the small visible slice while the corpus is the whole " +
+                "page (legacy=${visible.str("text").orEmpty().length}, " +
+                "corpus=${focused.int("original_chars")}); envelope: $visible",
+            visible.str("text").orEmpty().length < focused.int("original_chars") / 4,
+        )
+
+        // (3) Ranking now reaches the collapsed section - and selects it, it does not fall back.
+        assertEquals("true", focused.str("focused"))
+        assertNull(
+            "the deep marker must be selected, not handed back by fallback; envelope: $focused",
+            focused.str("focus_fallback"),
+        )
+        assertTrue(
+            "browser focus must reach the until-found section; envelope: $focused",
+            focused.str("text").orEmpty().contains(UNTIL_FOUND_DEEP_MARKER),
+        )
+        assertTrue(
+            "the corpus must be the whole bounded page, not the ~4 KB visible slice " +
+                "(corpus=${focused.int("original_chars")}); envelope: $focused",
+            focused.int("original_chars") > 32 * 1024,
+        )
+        assertTrue(
+            "the corpus must be much larger than the answer " +
+                "(corpus=${focused.int("original_chars")}, returned=${focused.int("returned_chars")})",
+            focused.int("original_chars") > 4 * focused.int("returned_chars"),
+        )
+
+        // (4) Token economy: the answer is a small selection of a big corpus, never the corpus.
+        assertTrue(
+            "the ranked answer must stay inside the focused budget; envelope: $focused",
+            focused.int("returned_chars") <= minOf(FOCUS_CHAR_BUDGET, BROWSER_GET_TEXT_DEFAULT_MAX_CHARS),
+        )
+        assertTrue(
+            "a focused answer may not exceed the corpus it ranked; envelope: $focused",
+            focused.int("returned_chars") <= focused.int("original_chars"),
+        )
+        assertTrue(
+            "the caller's smaller max_chars must still cap the answer; envelope: $budgeted",
+            budgeted.int("returned_chars") <= 300,
+        )
+
+        // (2) No genuinely hidden subtree may be promoted into the corpus it now reads.
+        for (leak in leaks) {
+            assertFalse(
+                "$leak must never be ranked from a rendered page; envelope: $focused",
+                focused.str("text").orEmpty().contains(leak),
+            )
+        }
+
+        // (8) source_id / cache / pagination keep working, and reuse never re-reads the page.
+        val sourceId = visible.str("source_id")
+        assertNotNull("the raw full-page read must publish a source_id", sourceId)
+        val cached = webSourceCache.get(sourceId!!)
+        assertNotNull("the browser research corpus must be cached", cached)
+        assertTrue(
+            "the cached corpus must contain the collapsed section",
+            cached!!.text.contains(UNTIL_FOUND_DEEP_MARKER),
+        )
+        for (leak in leaks) {
+            assertFalse("$leak leaked into the stored research source", cached.text.contains(leak))
+        }
+
+        val reused = invoke(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(net).build()),
+            buildJsonObject {
+                put("source_id", JsonPrimitive(sourceId))
+                put("focus", JsonPrimitive(UNTIL_FOUND_DEEP_MARKER))
+            },
+        )
+        assertEquals("true", reused.str("cached"))
+        assertEquals("browser", reused.str("source_kind"))
+        assertTrue(reused.str("text").orEmpty().contains(UNTIL_FOUND_DEEP_MARKER))
+        assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
+
+        val window = invoke(
+            webExtractTool(OkHttpClient.Builder().addInterceptor(net).build()),
+            buildJsonObject {
+                put("source_id", JsonPrimitive(sourceId))
+                put("max_chars", JsonPrimitive(200))
+            },
+        )
+        assertEquals("ok", "true", window.str("ok"))
+        assertEquals(
+            "pagination over the cached corpus is unchanged; envelope: $window",
+            200,
+            window.str("text").orEmpty().length,
+        )
+        assertEquals("200", window.str("next_start_index"))
         assertEquals("cached reuse must not touch HTTP", 0, net.requests.get())
     }
 
@@ -778,6 +933,45 @@ class WebViewResearchInstrumentedTest {
         append("</article></main></body></html>")
     }
 
+    /**
+     * Models the mobile Wikipedia/Minerva shape: the article prose is already in the DOM and the
+     * skin collapses it with `hidden="until-found"` (Chromium implements that as
+     * `content-visibility:hidden`), so `node.hidden` is truthy for real prose while `innerText`
+     * still excludes it. Every genuinely hidden shape sits beside it as its own marker, so a
+     * regression that widens the corpus cannot pass unnoticed.
+     */
+    private fun untilFoundCollapsedPageHtml(): String = buildString {
+        append("<!doctype html><html><head><title>Until-found collapsed article</title>")
+        append("<style>.mw-collapsible-content{content-visibility:hidden}</style>")
+        append("<script>window.__leak='$SCRIPT_SENTINEL';</script>")
+        append("<style>.probe{content:'$STYLE_SENTINEL'}</style>")
+        append("</head><body><main><article><h1>Until-found collapsed article</h1>")
+        repeat(6) { append("<p>$UNTIL_FOUND_VISIBLE_MARKER. $PROSE</p>") }
+
+        append("<section><div class='mw-heading'><h2>History</h2></div>")
+        append("<div class='mw-collapsible-content' hidden='until-found'>")
+        repeat(240) { append("<p>$ARCHIVE_FILLER</p>") }
+        append("<p>Andrew Wiles proved $UNTIL_FOUND_DEEP_MARKER in 1994.</p>")
+        append("</div></section>")
+
+        // Ordinary `hidden` inside the same semantic shape: still a hide.
+        append("<section><div class='mw-heading'><h2>Plain hidden</h2></div>")
+        append("<div class='mw-collapsible-content' hidden>$HIDDEN_SENTINEL</div></section>")
+        // `inert` and `aria-hidden` inside the same semantic shape: still a hide.
+        append("<section><div class='mw-heading'><h2>Inert</h2></div>")
+        append("<div class='mw-collapsible-content' inert>$INERT_LEAK_MARKER</div></section>")
+        append("<section><div class='mw-heading'><h2>Aria hidden</h2></div>")
+        append("<div class='mw-collapsible-content' aria-hidden='true'>$ARIA_LEAK_MARKER</div></section>")
+        // A bare `until-found` with no semantic container around it: not prose, still excluded.
+        append("<div hidden='until-found'>$BARE_UNTIL_FOUND_LEAK_MARKER</div>")
+        // Inline de-render styles, semantic container or not.
+        append("<div style='display:none'>$DISPLAY_NONE_SENTINEL</div>")
+        append("<div style='visibility:hidden'>$VISIBILITY_HIDDEN_LEAK_MARKER</div>")
+        append("<div style='content-visibility:hidden'>$CSS_HIDDEN_LEAK_MARKER</div>")
+        append("<form><input type='password' value='$PASSWORD_SENTINEL'></form>")
+        append("</article></main></body></html>")
+    }
+
     private fun shortPageHtml(): String =
         "<!doctype html><html><head><title>Short page</title></head><body>" +
             "<div id='only'>$SHORT_PAGE_MARKER and very little else.</div></body></html>"
@@ -824,6 +1018,22 @@ class WebViewResearchInstrumentedTest {
         /** F1: text inside an SVG-namespace subtree, plus the prose that must survive beside it. */
         const val SVG_LEAK_MARKER = "SVGFINDER77"
         const val SVG_SAFE_MARKER = "SVGSAFEPROSE8"
+
+        /**
+         * `hidden="until-found"`: the visible intro, the marker parked deep inside the collapsed
+         * section, and the companions that must never be promoted with it.
+         */
+        const val UNTIL_FOUND_VISIBLE_MARKER = "UNTILFOUND-VISIBLE-31"
+        const val UNTIL_FOUND_DEEP_MARKER = "FERMAT-WILES-DEEP-1994"
+        const val BARE_UNTIL_FOUND_LEAK_MARKER = "BAREUNTILFOUNDLEAK"
+        const val VISIBILITY_HIDDEN_LEAK_MARKER = "VISIBILITYHIDDENLEAK"
+
+        /** The focused answer is capped by this budget, whatever the corpus size. */
+        const val FOCUS_CHAR_BUDGET = QueryFocusedExtractor.FOCUS_CHAR_BUDGET
+
+        /** [FOCUS_CHAR_BUDGET] is `const val`, so this companion needs the value at compile time. */
+        const val ARCHIVE_FILLER = "The archive ledger records a transit observation with calibration notes " +
+            "and a mirror reading, annotated so a later reader can retrace the season."
 
         /** F2: the marker inside the CSS-collapsed semantic section and the forbidden companions. */
         const val SEMANTIC_KEEP_MARKER = "SEMANTICSECTIONKEEP"

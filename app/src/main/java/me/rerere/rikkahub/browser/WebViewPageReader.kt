@@ -278,13 +278,36 @@ internal object WebViewPageReader : RenderedPageReader {
                     var tag = normalizedTag(node);
                     if (forbiddenTags[tag]) return;
                     var ariaHidden = (node.getAttribute('aria-hidden') || '').trim().toLowerCase();
-                    if (node.hidden || node.hasAttribute('inert') || ariaHidden === 'true') return;
+                    if (node.hasAttribute('inert') || ariaHidden === 'true') return;
+                    // `hidden` is an enumerated attribute, not a boolean. `hidden="until-found"`
+                    // means the engine keeps the subtree rendered-but-collapsed (find-in-page,
+                    // fragment navigation) and is exactly how the mobile Wikipedia/Minerva skin
+                    // hides the article's later sections behind a stylesheet. The IDL attribute
+                    // serialises that value, so `if (node.hidden)` is truthy for real prose: whole
+                    // semantic sections were dropped before ranking, leaving a 39 KB article with
+                    // the 3.5 KB lead. Read the attribute instead and let `until-found` through in
+                    // the one place it is already safe for `content-visibility:hidden` below - a
+                    // semantic container. Plain `hidden`, `inert`, `aria-hidden` and any other
+                    // value still keep the subtree out of the corpus.
+                    var hiddenAttr = node.hasAttribute('hidden')
+                        ? (node.getAttribute('hidden') || '').trim().toLowerCase()
+                        : null;
                     var role = (node.getAttribute('role') || '').trim().toLowerCase();
+                    if (hiddenAttr !== null &&
+                        !(hiddenAttr === 'until-found' &&
+                            isCollapsedSemanticContainer(node, tag, role))) return;
                     if (forbiddenRoles[role]) return;
                     var styleText = (node.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+                    // A stylesheet collapse is not a hide. `content-visibility:hidden` - and the
+                    // `hidden="until-found"` value Chromium implements as one - keeps the subtree in
+                    // the DOM and reachable (find-in-page, fragment navigation); it is how mobile
+                    // article skins keep a section's prose. Only a semantic container is exempted,
+                    // exactly as `display:none` already is below; anything else stays out.
+                    var semanticContainer = isCollapsedSemanticContainer(node, tag, role);
                     if (styleText.indexOf('display:none') >= 0 ||
-                        styleText.indexOf('visibility:hidden') >= 0 ||
-                        styleText.indexOf('content-visibility:hidden') >= 0) return;
+                        styleText.indexOf('visibility:hidden') >= 0) return;
+                    if (styleText.indexOf('content-visibility:hidden') >= 0 &&
+                        !semanticContainer) return;
 
                     var computed = null;
                     try {
@@ -293,10 +316,9 @@ internal object WebViewPageReader : RenderedPageReader {
                         computed = null;
                     }
                     if (computed) {
-                        if (computed.visibility === 'hidden' || computed.visibility === 'collapse' ||
-                            computed.contentVisibility === 'hidden') return;
-                        if (computed.display === 'none' &&
-                            !isCollapsedSemanticContainer(node, tag, role)) return;
+                        if (computed.visibility === 'hidden' || computed.visibility === 'collapse') return;
+                        if (computed.contentVisibility === 'hidden' && !semanticContainer) return;
+                        if (computed.display === 'none' && !semanticContainer) return;
                     }
 
                     if (tag === 'BR') {

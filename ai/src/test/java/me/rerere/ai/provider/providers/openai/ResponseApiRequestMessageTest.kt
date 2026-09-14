@@ -13,6 +13,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.BuiltInTools
+import me.rerere.ai.provider.CustomBody
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -70,11 +71,14 @@ class ResponseApiRequestMessageTest {
         return api.buildRequestBody(providerSetting, messages, params, stream)
     }
 
-    private fun createReasoningParams(reasoningLevel: ReasoningLevel = ReasoningLevel.OFF): TextGenerationParams {
+    private fun createReasoningParams(
+        reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,
+        modelId: String = "test-model",
+    ): TextGenerationParams {
         return TextGenerationParams(
             model = Model(
-                modelId = "test-model",
-                displayName = "test-model",
+                modelId = modelId,
+                displayName = modelId,
                 abilities = listOf(ModelAbility.REASONING)
             ),
             reasoningLevel = reasoningLevel
@@ -408,6 +412,128 @@ class ResponseApiRequestMessageTest {
         val reasoning = requestBody["reasoning"]?.jsonObject
         assertTrue("reasoning should exist", reasoning != null)
         assertEquals("auto", reasoning!!["summary"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `Codex Spark response omits unsupported reasoning summary`() {
+        val providerSetting = ProviderSetting.OpenAI(
+            baseUrl = "https://chatgpt.com/backend-api/codex"
+        )
+
+        listOf(ReasoningLevel.AUTO, ReasoningLevel.HIGH).forEach { level ->
+            val requestBody = invokeBuildRequestBody(
+                providerSetting = providerSetting,
+                params = createReasoningParams(
+                    reasoningLevel = level,
+                    modelId = "gpt-5.3-codex-spark",
+                ),
+            )
+
+            val reasoning = requestBody["reasoning"]?.jsonObject
+            assertTrue("reasoning should exist", reasoning != null)
+            assertFalse("Spark must not include reasoning.summary", reasoning!!.containsKey("summary"))
+            if (level == ReasoningLevel.HIGH) {
+                assertEquals("high", reasoning["effort"]?.jsonPrimitive?.content)
+            } else {
+                assertFalse(reasoning.containsKey("effort"))
+            }
+            assertEquals(
+                "reasoning.encrypted_content",
+                requestBody["include"]?.jsonArray?.single()?.jsonPrimitive?.content,
+            )
+            assertFalse(requestBody.containsKey("stream_options"))
+        }
+    }
+
+    @Test
+    fun `Codex Spark strips unsupported options after custom body merge`() {
+        val params = createReasoningParams(
+            reasoningLevel = ReasoningLevel.HIGH,
+            modelId = "gpt-5.3-codex-spark",
+        ).copy(
+            customBody = listOf(
+                CustomBody(
+                    key = "reasoning",
+                    value = buildJsonObject {
+                        put("effort", "xhigh")
+                        put("summary", "auto")
+                    },
+                ),
+                CustomBody(
+                    key = "stream_options",
+                    value = buildJsonObject {
+                        put("reasoning_summary_delivery", "summary_text.delta")
+                    },
+                ),
+            )
+        )
+
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(
+                baseUrl = "https://chatgpt.com/backend-api/codex"
+            ),
+            params = params,
+        )
+
+        val reasoning = requestBody["reasoning"]?.jsonObject
+        assertEquals("xhigh", reasoning?.get("effort")?.jsonPrimitive?.content)
+        assertFalse("Spark must strip custom reasoning.summary", reasoning!!.containsKey("summary"))
+        assertFalse(requestBody.containsKey("stream_options"))
+    }
+
+    @Test
+    fun `Codex Spark treats unsupported off effort as backend default`() {
+        val params = createReasoningParams(
+            reasoningLevel = ReasoningLevel.OFF,
+            modelId = "gpt-5.3-codex-spark",
+        ).copy(
+            customBody = listOf(
+                CustomBody(
+                    key = "reasoning",
+                    value = buildJsonObject {
+                        put("effort", "none")
+                        put("summary", "auto")
+                    },
+                )
+            )
+        )
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(
+                baseUrl = "https://chatgpt.com/backend-api/codex"
+            ),
+            params = params,
+        )
+
+        val reasoning = requestBody["reasoning"]?.jsonObject
+        assertTrue("reasoning should exist", reasoning != null)
+        assertFalse(reasoning!!.containsKey("summary"))
+        assertFalse(reasoning.containsKey("effort"))
+    }
+
+    @Test
+    fun `chatgpt Codex models other than Spark keep normal reasoning options`() {
+        val providerSetting = ProviderSetting.OpenAI(
+            baseUrl = "https://chatgpt.com/backend-api/codex"
+        )
+        val high = invokeBuildRequestBody(
+            providerSetting = providerSetting,
+            params = createReasoningParams(
+                reasoningLevel = ReasoningLevel.HIGH,
+                modelId = "gpt-5.6-sol",
+            ),
+        )["reasoning"]?.jsonObject
+        val off = invokeBuildRequestBody(
+            providerSetting = providerSetting,
+            params = createReasoningParams(
+                reasoningLevel = ReasoningLevel.OFF,
+                modelId = "gpt-5.6-sol",
+            ),
+        )["reasoning"]?.jsonObject
+
+        assertEquals("auto", high?.get("summary")?.jsonPrimitive?.content)
+        assertEquals("high", high?.get("effort")?.jsonPrimitive?.content)
+        assertEquals("auto", off?.get("summary")?.jsonPrimitive?.content)
+        assertEquals("none", off?.get("effort")?.jsonPrimitive?.content)
     }
 
     @Test

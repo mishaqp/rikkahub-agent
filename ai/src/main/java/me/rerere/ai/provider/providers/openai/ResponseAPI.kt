@@ -411,8 +411,11 @@ class ResponseAPI(
         stream: Boolean
     ): JsonObject {
         val host = providerSetting.baseUrl.toHttpUrl().host
-        val capabilities = resolveResponseProviderCapabilities(host)
-        return buildJsonObject {
+        val capabilities = resolveResponseProviderCapabilities(
+            host = host,
+            modelId = params.model.modelId,
+        )
+        val requestBody = buildJsonObject {
             put("model", params.model.modelId)
             put("stream", stream)
             put("store", false)
@@ -441,7 +444,10 @@ class ResponseAPI(
                     if (capabilities.supportsReasoningSummary) {
                         put("summary", "auto")
                     }
-                    if (level != ReasoningLevel.AUTO) {
+                    if (
+                        level != ReasoningLevel.AUTO &&
+                        (level != ReasoningLevel.OFF || capabilities.supportsDisabledReasoning)
+                    ) {
                         put("effort", level.effort)
                     }
                 })
@@ -496,6 +502,7 @@ class ResponseAPI(
                 }
             }
         }.mergeCustomBody(params.customBody)
+        return requestBody.sanitizeReasoningOptions(capabilities)
     }
 
     fun buildMessages(
@@ -960,14 +967,64 @@ private fun List<UIMessagePart>.isOnlyTextPart(): Boolean {
     return gonnaSend == texts && texts == 1
 }
 
+private fun JsonObject.sanitizeReasoningOptions(
+    capabilities: ResponseProviderCapabilities,
+): JsonObject {
+    val content = toMutableMap()
+    var changed = false
+    (content["reasoning"] as? JsonObject)?.let { reasoning ->
+        val sanitized = reasoning.filterKeys { key ->
+            when (key) {
+                "summary" -> capabilities.supportsReasoningSummary
+                "effort" -> capabilities.supportsDisabledReasoning ||
+                    (reasoning["effort"] as? JsonPrimitive)?.contentOrNull != ReasoningLevel.OFF.effort
+                else -> true
+            }
+        }
+        if (sanitized.size != reasoning.size) {
+            content["reasoning"] = JsonObject(sanitized)
+            changed = true
+        }
+    }
+    if (!capabilities.supportsReasoningSummary) {
+        (content["stream_options"] as? JsonObject)?.let { streamOptions ->
+            if ("reasoning_summary_delivery" in streamOptions) {
+                val sanitized = streamOptions.filterKeys { it != "reasoning_summary_delivery" }
+                if (sanitized.isEmpty()) {
+                    content.remove("stream_options")
+                } else {
+                    content["stream_options"] = JsonObject(sanitized)
+                }
+                changed = true
+            }
+        }
+    }
+    return if (changed) JsonObject(content) else this
+}
+
 internal data class ResponseProviderCapabilities(
     val supportsReasoningSummary: Boolean = true,
-    val supportEncryptedContent: Boolean = true
+    val supportEncryptedContent: Boolean = true,
+    val supportsDisabledReasoning: Boolean = true,
 )
 
-internal fun resolveResponseProviderCapabilities(host: String): ResponseProviderCapabilities {
-    return when (host) {
-        "ark.cn-beijing.volces.com" -> ResponseProviderCapabilities(
+internal fun resolveResponseProviderCapabilities(
+    host: String,
+    modelId: String? = null,
+): ResponseProviderCapabilities {
+    return when {
+        host == "chatgpt.com" && modelId.equals(CODEX_SPARK_MODEL_ID, ignoreCase = true) ->
+            ResponseProviderCapabilities(
+                // The Codex backend rejects this field for Spark with `unsupported_parameter`.
+                // It must be absent (not `none`) on the final serialized request, including
+                // after caller-supplied custom body fields have been merged.
+                supportsReasoningSummary = false,
+                // Spark has no `none` reasoning level. AUTO lets the backend apply its advertised
+                // default (currently high) when the user turns reasoning off in RikkaHub.
+                supportsDisabledReasoning = false,
+            )
+
+        host == "ark.cn-beijing.volces.com" -> ResponseProviderCapabilities(
             supportsReasoningSummary = false,
             supportEncryptedContent = false
         )
@@ -975,3 +1032,5 @@ internal fun resolveResponseProviderCapabilities(host: String): ResponseProvider
         else -> ResponseProviderCapabilities()
     }
 }
+
+private const val CODEX_SPARK_MODEL_ID = "gpt-5.3-codex-spark"

@@ -1,8 +1,10 @@
 package me.rerere.rikkahub.data.codex
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.ReasoningLevel
 import okhttp3.Headers
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -67,6 +69,37 @@ class CodexAccountTest {
     }
 
     @Test
+    fun `usage JSON exposes the separate Spark limit`() {
+        val usage = parseCodexUsage(
+            json.parseToJsonElement(
+                """
+                    {
+                      "rate_limit": {
+                        "primary_window": { "used_percent": 100 }
+                      },
+                      "additional_rate_limits": [
+                        {
+                          "limit_name": "GPT-5.3-Codex-Spark",
+                          "metered_feature": "codex_bengalfox",
+                          "rate_limit": {
+                            "primary_window": {
+                              "used_percent": 25,
+                              "reset_at": 2000000000
+                            }
+                          }
+                        }
+                      ]
+                    }
+                """.trimIndent()
+            ).let { it as kotlinx.serialization.json.JsonObject }
+        )
+
+        val spark = usage.additional[CODEX_SPARK_LIMIT_ID]
+        assertEquals(CODEX_SPARK_MODEL_ID, spark?.name?.lowercase())
+        assertEquals(25.0, spark?.primary?.usedPercent ?: 0.0, 0.0)
+    }
+
+    @Test
     fun `usage headers support reset after seconds`() {
         val before = System.currentTimeMillis() / 1000
         val usage = parseCodexUsage(
@@ -78,6 +111,21 @@ class CodexAccountTest {
 
         assertNotNull(usage)
         assertTrue(usage!!.primary!!.resetsAt!! >= before + 60)
+    }
+
+    @Test
+    fun `usage headers expose arbitrary Codex limit families`() {
+        val usage = parseCodexUsage(
+            Headers.headersOf(
+                "x-codex-bengalfox-primary-used-percent", "75",
+                "x-codex-bengalfox-primary-window-minutes", "10080",
+                "x-codex-bengalfox-limit-name", "GPT-5.3-Codex-Spark",
+            )
+        )
+
+        val spark = usage?.additional?.get(CODEX_SPARK_LIMIT_ID)
+        assertEquals(75.0, spark?.primary?.usedPercent ?: 0.0, 0.0)
+        assertEquals(10_080L, spark?.primary?.windowMinutes)
     }
 
     @Test
@@ -121,6 +169,68 @@ class CodexAccountTest {
     }
 
     @Test
+    fun `Spark can use its separate quota when regular Codex quota is exhausted`() {
+        val accounts = listOf(
+            account("disabled", enabled = false),
+            account("invalid", status = CodexTokenStatus.INVALID),
+            account(
+                "spark-available",
+                usage = CodexUsageSnapshot(
+                    primary = CodexUsageWindow(usedPercent = 100.0, resetsAt = 2_000_000_000)
+                )
+            ),
+        )
+
+        assertNull(
+            selectCodexAccountIndex(
+                accounts = accounts,
+                startIndex = 0,
+                modelId = "gpt-5.6-sol",
+                nowMillis = 1_000,
+            )
+        )
+        assertEquals(
+            2,
+            selectCodexAccountIndex(
+                accounts = accounts,
+                startIndex = 0,
+                modelId = CODEX_SPARK_MODEL_ID,
+                nowMillis = 1_000,
+            )
+        )
+    }
+
+    @Test
+    fun `Spark account selection skips its exhausted separate quota`() {
+        fun sparkUsage(usedPercent: Double) = CodexUsageSnapshot(
+            primary = CodexUsageWindow(usedPercent = 100.0, resetsAt = 2_000_000_000),
+            additional = mapOf(
+                CODEX_SPARK_LIMIT_ID to CodexUsageLimit(
+                    name = CODEX_SPARK_MODEL_ID,
+                    primary = CodexUsageWindow(
+                        usedPercent = usedPercent,
+                        resetsAt = 2_000_000_000,
+                    ),
+                )
+            ),
+        )
+        val accounts = listOf(
+            account("spark-exhausted", usage = sparkUsage(100.0)),
+            account("spark-available", usage = sparkUsage(40.0)),
+        )
+
+        assertEquals(
+            1,
+            selectCodexAccountIndex(
+                accounts = accounts,
+                startIndex = 0,
+                nowMillis = 1_000,
+                modelId = CODEX_SPARK_MODEL_ID,
+            )
+        )
+    }
+
+    @Test
     fun `metadata account selection ignores exhausted quota`() {
         val accounts = listOf(
             account("disabled", enabled = false),
@@ -141,6 +251,106 @@ class CodexAccountTest {
     fun `auto reasoning omits Codex effort`() {
         assertNull(codexReasoningEffort(ReasoningLevel.AUTO))
         assertEquals("high", codexReasoningEffort(ReasoningLevel.HIGH))
+    }
+
+    @Test
+    fun `Spark Codex override never reintroduces reasoning summary`() {
+        val high = codexReasoningOverride(
+            modelId = CODEX_SPARK_MODEL_ID,
+            level = ReasoningLevel.HIGH,
+            supportsReasoning = true,
+        )
+
+        assertEquals("high", high?.get("effort")?.jsonPrimitive?.content)
+        assertNull(high?.get("summary"))
+        assertNull(
+            codexReasoningOverride(
+                modelId = CODEX_SPARK_MODEL_ID,
+                level = ReasoningLevel.AUTO,
+                supportsReasoning = true,
+            )
+        )
+        assertNull(
+            codexReasoningOverride(
+                modelId = CODEX_SPARK_MODEL_ID,
+                level = ReasoningLevel.OFF,
+                supportsReasoning = true,
+            )
+        )
+    }
+
+    @Test
+    fun `regular Codex reasoning keeps summary behavior`() {
+        val regular = codexReasoningOverride(
+            modelId = "gpt-5.6-sol",
+            level = ReasoningLevel.HIGH,
+            supportsReasoning = true,
+        )
+
+        assertEquals("high", regular?.get("effort")?.jsonPrimitive?.content)
+        assertEquals("auto", regular?.get("summary")?.jsonPrimitive?.content)
+        assertEquals(
+            "none",
+            codexReasoningOverride(
+                modelId = "gpt-5.6-sol",
+                level = ReasoningLevel.OFF,
+                supportsReasoning = true,
+            )?.get("effort")?.jsonPrimitive?.content,
+        )
+        assertNull(
+            codexReasoningOverride(
+                modelId = "gpt-5.6-sol",
+                level = ReasoningLevel.HIGH,
+                supportsReasoning = false,
+            )
+        )
+    }
+
+    @Test
+    fun `Codex OAuth and refresh payload match current CLI contract`() {
+        assertEquals("0.154.0", CODEX_CLIENT_VERSION)
+        assertEquals(
+            setOf(
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "api.connectors.read",
+                "api.connectors.invoke",
+            ),
+            CodexOAuthManager.DEFAULT_SCOPES.split(' ').toSet(),
+        )
+
+        val refresh = buildCodexRefreshBody("rotating-refresh-token")
+        assertEquals(CodexOAuthManager.CLIENT_ID, refresh["client_id"]?.jsonPrimitive?.content)
+        assertEquals("refresh_token", refresh["grant_type"]?.jsonPrimitive?.content)
+        assertEquals("rotating-refresh-token", refresh["refresh_token"]?.jsonPrimitive?.content)
+        assertNull(refresh["scope"])
+
+        val request = buildCodexRefreshRequest(
+            refreshToken = "rotating-refresh-token",
+            userAgent = "codex_cli_rs/0.154.0 (test)",
+        )
+        val encodedBody = Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+        assertEquals("POST", request.method)
+        assertEquals("application/json", request.body?.contentType()?.toString())
+        assertEquals(CODEX_ORIGINATOR, request.header("originator"))
+        assertEquals("codex_cli_rs/0.154.0 (test)", request.header("User-Agent"))
+        assertNull(request.header("version"))
+        assertNull(request.header("OpenAI-Beta"))
+        assertEquals(refresh, json.parseToJsonElement(encodedBody))
+
+        val responseHeaders = codexProtocolHeaders(
+            chatgptAccountId = "account-1",
+            stream = true,
+            userAgent = "codex_cli_rs/0.154.0 (test)",
+        ).associate { it.name.lowercase() to it.value }
+        assertEquals("account-1", responseHeaders["chatgpt-account-id"])
+        assertEquals("0.154.0", responseHeaders["version"])
+        assertEquals(CODEX_ORIGINATOR, responseHeaders["originator"])
+        assertEquals("codex_cli_rs/0.154.0 (test)", responseHeaders["user-agent"])
+        assertEquals("text/event-stream", responseHeaders["accept"])
+        assertNull(responseHeaders["openai-beta"])
     }
 
     @Test
@@ -173,11 +383,33 @@ class CodexAccountTest {
             )
         )
         assertTrue(isCodexRefreshAuthenticationFailure(401, "", json))
+        assertTrue(
+            isCodexRefreshAuthenticationFailure(
+                statusCode = 400,
+                responseBody = """{"error":{"code":"refresh_token_reused"}}""",
+                json = json,
+            )
+        )
+        assertTrue(
+            isCodexRefreshAuthenticationFailure(
+                statusCode = 403,
+                responseBody = """{"code":"refresh_token_invalidated"}""",
+                json = json,
+            )
+        )
         assertEquals(
             false,
             isCodexRefreshAuthenticationFailure(
                 statusCode = 500,
                 responseBody = """{"error":"server_error"}""",
+                json = json,
+            )
+        )
+        assertEquals(
+            false,
+            isCodexRefreshAuthenticationFailure(
+                statusCode = 400,
+                responseBody = """{"error":"invalid_token"}""",
                 json = json,
             )
         )

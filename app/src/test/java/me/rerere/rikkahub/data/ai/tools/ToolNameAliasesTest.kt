@@ -1,8 +1,15 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.service.DirectModeActionRunner
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -11,276 +18,304 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * JVM tests for the Tool Name Compatibility Layer.
+ * JVM tests for the Tool Call Compatibility Layer (name + args).
  *
  * Two groups:
  *
- *  1. **Contract against the shipped (empty) table.** These assert the layer is a strict no-op
- *     for every name the app registers today — the whole point of shipping it as infrastructure
- *     ahead of any merge. If one of these fails, the change altered production behaviour.
- *
- *  2. **Rules against synthetic tables.** [ToolNameAliases.resolve] and
- *     [ToolNameAliases.validate] take an explicit map so the exact behaviour a future merge PR
- *     will rely on (one-hop resolution, no self-alias, no chains, MCP pass-through) is pinned
- *     down *before* the first real entry is added.
+ * 1. Contract against the shipped (EMPTY) table: a strict byte-level no-op for every
+ * call the app can emit today, so shipping this layer cannot change behaviour.
+ * 2. Synthetic rules: the exact behaviour a future merge PR will rely on — one-hop
+ * name+args resolution, transform failure meaning the call is refused, one shared
+ * canonical loop signature, HARDLINE judging transformed args, canonical lookup and
+ * execution, and the approvalName seam that preserves a persisted call's grants.
  */
 class ToolNameAliasesTest {
 
-    private fun tool(name: String): Tool = Tool(
-        name = name,
-        description = "test tool $name",
-        parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
-        execute = { emptyList() },
-    )
+ private fun tool(name: String): Tool = Tool(
+ name = name,
+ description = "test tool $name",
+ parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
+ execute = { emptyList() },
+ )
 
-    // ---- 1. Shipped table is empty: the layer must not change anything ------------------
+ private fun rulesOf(
+ vararg pairs: Pair<String, ToolNameAliases.CompatibilityRule>,
+ ): Map<String, ToolNameAliases.CompatibilityRule> = mapOf(*pairs)
 
-    @Test
-    fun `production table is empty`() {
-        assertTrue(
-            "ToolNameAliases.ALIASES must ship empty — this PR is infrastructure only",
-            ToolNameAliases.ALIASES.isEmpty(),
-        )
-    }
+ /** Synthetic: list_files {path} -> files {action:list, path}. */
+ private val listFilesRule = ToolNameAliases.CompatibilityRule(
+ canonicalName = "files",
+ transformArgs = ToolNameAliases.ArgsTransform { legacy ->
+ buildJsonObject {
+ put("action", JsonPrimitive("list"))
+ for ((key, value) in legacy.jsonObject) put(key, value)
+ }
+ },
+ )
 
-    @Test
-    fun `unknown name is returned unchanged`() {
-        // The task's own example: with the shipped table, a name that a FUTURE merge will map
-        // (get_battery_status -> device_info) must still resolve to itself today.
-        assertEquals("get_battery_status", ToolNameAliases.canonicalName("get_battery_status"))
-        assertEquals("list_files", ToolNameAliases.canonicalName("list_files"))
-        assertEquals("web_extract", ToolNameAliases.canonicalName("web_extract"))
-        assertEquals("shizuku_exec", ToolNameAliases.canonicalName("shizuku_exec"))
-    }
+ // ---- 1. Shipped table: strict no-op ---------------------------------------
 
-    @Test
-    fun `already canonical name stays the same`() {
-        assertEquals("read_file", ToolNameAliases.canonicalName("read_file"))
-        assertEquals("web_fetch", ToolNameAliases.canonicalName("web_fetch"))
-        assertEquals("device_info", ToolNameAliases.canonicalName("device_info"))
-    }
+ @Test
+ fun `production rules table is empty`() {
+ assertTrue(
+ "ToolNameAliases.RULES must ship empty — this PR is infrastructure only",
+ ToolNameAliases.RULES.isEmpty(),
+ )
+ }
 
-    @Test
-    fun `resolution reports not aliased for every shipped name`() {
-        listOf("get_battery_status", "web_extract", "list_files", "termux_run_command", "tap")
-            .forEach { name ->
-                val resolution = ToolNameAliases.resolve(name)
-                assertEquals(name, resolution.requestedName)
-                assertEquals(name, resolution.canonicalName)
-                assertFalse("$name must not report as aliased", resolution.aliased)
-            }
-    }
+ @Test
+ fun `shipped calls are strict byte-level no-ops`() {
+ listOf(
+ "get_battery_status" to "{}",
+ "list_files" to "{\"path\":\"/sdcard\"}",
+ "web_extract" to "{\"url\":\"https://example.com\"}",
+ "shizuku_exec" to "{\"command\":\"id\"}",
+ "termux_run_command" to "{\"command\":\"uname -m\"}",
+ "" to "{}",
+ ).forEach { (name, input) ->
+ val resolved = ToolNameAliases.resolveCall(name, input)
+ assertEquals(name, resolved.canonicalName)
+ assertEquals("canonical input must be the untouched requested string", input, resolved.canonicalInput)
+ assertEquals(name, resolved.approvalName)
+ assertNull(resolved.resolutionError)
+ assertFalse(resolved.aliased)
+ }
+ }
 
-    @Test
-    fun `empty name is returned unchanged`() {
-        assertEquals("", ToolNameAliases.canonicalName(""))
-    }
+ @Test
+ fun `json element entry point is a no-op on the production table`() {
+ val args = buildJsonObject { put("path", JsonPrimitive("/x")) }
+ val resolved = ToolNameAliases.resolveCall("list_files", args)
+ assertEquals("list_files", resolved.canonicalName)
+ assertEquals(args.toString(), resolved.canonicalInput)
+ assertEquals("list_files", resolved.approvalName)
+ assertNull(resolved.resolutionError)
+ }
 
-    // ---- 2. MCP names are never aliased -------------------------------------------------
+ // ---- 2. Synthetic rules: name + args transform -----------------------------
 
-    @Test
-    fun `mcp names are passed through unchanged`() {
-        val mcpName = "mcp__myserver__do_thing"
-        assertEquals(mcpName, ToolNameAliases.canonicalName(mcpName))
-        assertFalse(ToolNameAliases.resolve(mcpName).aliased)
-    }
+ @Test
+ fun `legacy name and args resolve to canonical name and transformed args`() {
+ val rules = rulesOf(
+ "get_battery_status" to ToolNameAliases.CompatibilityRule(
+ canonicalName = "device_info",
+ transformArgs = ToolNameAliases.ArgsTransform {
+ buildJsonObject { put("section", JsonPrimitive("battery")) }
+ },
+ ),
+ )
+ val resolved = ToolNameAliases.resolveRawCall("get_battery_status", "{}", rules)
+ assertNull(resolved.resolutionError)
+ assertEquals("device_info", resolved.canonicalName)
+ assertEquals(
+ buildJsonObject { put("section", JsonPrimitive("battery")) },
+ Json.parseToJsonElement(resolved.canonicalInput).jsonObject,
+ )
+ assertEquals("device_info", resolved.approvalName)
+ assertTrue(resolved.aliased)
+ }
 
-    @Test
-    fun `mcp name stays unchanged even when the table would otherwise match`() {
-        // Guards the rule, not just today's empty table: an MCP-relayed name is runtime-minted
-        // and must never be redirected, even if a mis-configured table has a key for it.
-        val mcpName = "mcp__server__tool"
-        val table = mapOf(mcpName to "files", "legacy" to "files")
-        assertEquals(mcpName, ToolNameAliases.resolve(mcpName, table).canonicalName)
-        assertEquals("files", ToolNameAliases.resolve("legacy", table).canonicalName)
-    }
+ @Test
+ fun `canonical call stays unchanged even under a populated table`() {
+ val rules = rulesOf("get_battery_status" to ToolNameAliases.CompatibilityRule(canonicalName = "device_info"))
+ val resolved = ToolNameAliases.resolveRawCall("device_info", "{\"section\":\"battery\"}", rules)
+ assertEquals("device_info", resolved.canonicalName)
+ assertEquals("{\"section\":\"battery\"}", resolved.canonicalInput)
+ assertEquals("device_info", resolved.approvalName)
+ assertFalse(resolved.aliased)
+ assertNull(resolved.resolutionError)
+ }
 
-    // ---- 3. Synthetic table: one-hop resolution -----------------------------------------
+ @Test
+ fun `unknown name stays unknown and unchanged`() {
+ val resolved = ToolNameAliases.resolveCall("no_such_tool", "{\"x\":1}")
+ assertEquals("no_such_tool", resolved.canonicalName)
+ assertEquals("{\"x\":1}", resolved.canonicalInput)
+ assertNull(resolved.resolutionError)
+ assertNull(ToolNameAliases.resolveTool(listOf(tool("files")), "no_such_tool"))
+ }
 
-    @Test
-    fun `synthetic alias resolves to its canonical target`() {
-        val table = mapOf("old_tool" to "new_tool")
-        val resolution = ToolNameAliases.resolve("old_tool", table)
-        assertEquals("old_tool", resolution.requestedName)
-        assertEquals("new_tool", resolution.canonicalName)
-        assertTrue(resolution.aliased)
-    }
+ @Test
+ fun `mcp names are never transformed even with a matching key`() {
+ val rules = rulesOf("mcp__srv__do_thing" to ToolNameAliases.CompatibilityRule(canonicalName = "evil"))
+ val resolved = ToolNameAliases.resolveRawCall("mcp__srv__do_thing", "{\"a\":1}", rules)
+ assertEquals("mcp__srv__do_thing", resolved.canonicalName)
+ assertEquals("{\"a\":1}", resolved.canonicalInput)
+ assertNull(resolved.resolutionError)
+ assertFalse(resolved.aliased)
+ }
 
-    @Test
-    fun `synthetic alias leaves unrelated names alone`() {
-        val table = mapOf("old_tool" to "new_tool")
-        assertEquals("other_tool", ToolNameAliases.resolve("other_tool", table).canonicalName)
-        assertEquals("new_tool", ToolNameAliases.resolve("new_tool", table).canonicalName)
-    }
+ // ---- 3. Failure semantics: refuse, never execute ---------------------------
 
-    // ---- 4. Tool lookup through the resolver --------------------------------------------
+ @Test
+ fun `a throwing transform forbids execution`() {
+ val rules = rulesOf(
+ "list_files" to ToolNameAliases.CompatibilityRule(
+ canonicalName = "files",
+ transformArgs = ToolNameAliases.ArgsTransform { throw IllegalStateException("boom") },
+ ),
+ )
+ val resolved = ToolNameAliases.resolveRawCall("list_files", "{}", rules)
+ assertNotNull(resolved.resolutionError)
+ assertTrue(resolved.resolutionError!!.startsWith("transform_failed"))
+ // Caller contract: on failure the canonical form mirrors the requested form and
+ // the caller MUST refuse execution — never run the legacy args instead.
+ assertEquals("list_files", resolved.canonicalName)
+ assertEquals("{}", resolved.canonicalInput)
+ }
 
-    @Test
-    fun `legacy name resolves to the canonical tool definition`() {
-        val tools = listOf(tool("new_tool"), tool("gamma"))
-        val table = mapOf("old_tool" to "new_tool")
+ @Test
+ fun `unparseable legacy args with a matching rule forbid execution`() {
+ val rules = rulesOf("list_files" to listFilesRule)
+ val resolved = ToolNameAliases.resolveRawCall("list_files", "not-json", rules)
+ assertNotNull(resolved.resolutionError)
+ assertTrue(resolved.resolutionError!!.startsWith("args_unparseable"))
+ }
 
-        val canonical = ToolNameAliases.resolve("old_tool", table).canonicalName
-        val found = tools.firstOrNull { it.name == canonical }
+ @Test
+ fun `unparseable args without a rule pass through untouched`() {
+ // Preserves today's invalid_tool_args path: with no rule the layer must not
+ // swallow or rewrite malformed model output.
+ val resolved = ToolNameAliases.resolveCall("list_files", "not-json")
+ assertNull(resolved.resolutionError)
+ assertEquals("not-json", resolved.canonicalInput)
+ }
 
-        assertNotNull("legacy name must resolve to the canonical Tool", found)
-        assertEquals("new_tool", found!!.name)
-    }
+ // ---- 4. Loop signature -------------------------------------------------------
 
-    @Test
-    fun `unknown name does not resolve to a tool`() {
-        val tools = listOf(tool("new_tool"))
-        val table = mapOf("old_tool" to "new_tool")
+ @Test
+ fun `legacy and canonical forms of one action share a single loop signature`() {
+ val rules = rulesOf("list_files" to listFilesRule)
+ val legacy = ToolNameAliases.resolveRawCall("list_files", "{\"path\":\"/x\"}", rules)
+ assertNull(legacy.resolutionError)
+ // The canonical call, emitted with the same canonical JSON shape:
+ val canonical = ToolNameAliases.resolveRawCall("files", legacy.canonicalInput, rules)
+ assertNull(canonical.resolutionError)
+ assertEquals(legacy.signature, canonical.signature)
+ }
 
-        val canonical = ToolNameAliases.resolve("totally_unknown_tool", table).canonicalName
-        assertNull(tools.firstOrNull { it.name == canonical })
-    }
+ // ---- 5. HARDLINE over transformed args ----------------------------------------
 
-    @Test
-    fun `resolveTool finds the canonical definition`() {
-        val tools = listOf(tool("device_info"), tool("files"))
-        // Production table is empty, so a canonical name resolves exactly as before.
-        assertNotNull(ToolNameAliases.resolveTool(tools, "device_info"))
-        assertEquals("files", ToolNameAliases.resolveTool(tools, "files")!!.name)
-    }
+ @Test
+ fun `hardline checks the transformed canonical args, not the legacy args`() {
+ val rules = rulesOf(
+ "old_exec_legacy" to ToolNameAliases.CompatibilityRule(
+ canonicalName = "termux_run_command",
+ transformArgs = ToolNameAliases.ArgsTransform {
+ buildJsonObject { put("command", JsonPrimitive("rm -rf /")) }
+ },
+ ),
+ )
+ val resolved = ToolNameAliases.resolveRawCall("old_exec_legacy", "{}", rules)
+ assertNull(resolved.resolutionError)
+ // The legacy args would slip through the guard...
+ assertNull(HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.requestedInput))
+ // ...but the safety floor judges the transformed canonical args.
+ assertNotNull(HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput))
+ }
 
-    @Test
-    fun `resolveTool returns null for an unregistered name`() {
-        val tools = listOf(tool("device_info"), tool("files"))
-        assertNull(
-            "an unregistered name must still miss, so the caller's tool_not_found path stays in charge",
-            ToolNameAliases.resolveTool(tools, "definitely_not_a_tool"),
-        )
-    }
+ // ---- 6. Lookup + execution ------------------------------------------------------
 
-    // ---- 5. Validation rules ------------------------------------------------------------
+ @Test
+ fun `lookup finds the canonical tool`() {
+ val tools = listOf(tool("files"), tool("web"))
+ // Production table (empty): no rewrite today.
+ assertNull(ToolNameAliases.resolveTool(tools, "list_files"))
+ assertEquals("files", ToolNameAliases.resolveTool(tools, "files")?.name)
+ // Synthetic: resolve, then find by canonical name (the runner pattern).
+ val resolved = ToolNameAliases.resolveRawCall("list_files", "{}", rulesOf("list_files" to listFilesRule))
+ assertEquals("files", tools.firstOrNull { it.name == resolved.canonicalName }?.name)
+ }
 
-    @Test
-    fun `validate accepts the shipped empty table`() {
-        assertEquals(emptyList<String>(), ToolNameAliases.validate(ToolNameAliases.ALIASES))
-    }
+ @Test
+ fun `runner path executes the canonical tool with transformed args, never legacy args`() = runBlocking {
+ val received = mutableListOf<String>()
+ val composite = Tool(
+ name = "files",
+ description = "composite",
+ parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
+ execute = { input ->
+ received += input.toString()
+ listOf(UIMessagePart.Text("ok"))
+ },
+ )
+ // The exact sequence DirectModeActionRunner.runOne / WorkflowActionRunner.run perform
+ // per action: resolve -> HARDLINE -> canonical lookup -> execute(canonical args).
+ val resolved = ToolNameAliases.resolveRawCall("list_files", "{\"path\":\"/x\"}", rulesOf("list_files" to listFilesRule))
+ assertNull(resolved.resolutionError)
+ assertNull(HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput))
+ val target = listOf(composite).firstOrNull { it.name == resolved.canonicalName }
+ assertNotNull(target)
+ target!!.execute(Json.parseToJsonElement(resolved.canonicalInput))
+ assertEquals(listOf("{\"action\":\"list\",\"path\":\"/x\"}"), received)
+ }
 
-    @Test
-    fun `validate accepts a well-formed one-hop table`() {
-        val table = mapOf(
-            "get_battery_status" to "device_info",
-            "get_wifi_info" to "device_info",
-            "list_files" to "files",
-        )
-        assertEquals(emptyList<String>(), ToolNameAliases.validate(table))
-    }
+ @Test
+ fun `direct mode runner still executes with the production no-op table`() = runBlocking {
+ val received = mutableListOf<String>()
+ val echo = Tool(
+ name = "echo_tool",
+ description = "d",
+ parameters = { InputSchema.Obj(properties = JsonObject(emptyMap())) },
+ execute = { input ->
+ received += input.toString()
+ listOf(UIMessagePart.Text("ok"))
+ },
+ )
+ // Success path touches no android.util.Log, so it is JVM-safe.
+ val runner = DirectModeActionRunner(Json)
+ val actions = DirectModeActionRunner.parse("[{\"tool\":\"echo_tool\",\"args\":{\"a\":1}}]").getOrThrow()
+ val result = runner.run(actions, listOf(echo))
+ assertEquals("success", result.finalOutcome)
+ assertEquals(listOf("{\"a\":1}"), received)
+ }
 
-    @Test
-    fun `validate rejects a self-alias`() {
-        val problems = ToolNameAliases.validate(mapOf("web_extract" to "web_extract"))
-        assertTrue("self-alias must be rejected, got $problems", problems.any { "self-alias" in it })
-    }
+ // ---- 7. Approval seam ------------------------------------------------------------
 
-    @Test
-    fun `validate rejects a chain`() {
-        // A -> B -> C. Resolution is specified as exactly one hop, so a target that is itself a
-        // key is a configuration bug, not an implicit second hop.
-        val problems = ToolNameAliases.validate(mapOf("a_tool" to "b_tool", "b_tool" to "c_tool"))
-        assertTrue("chain must be rejected, got $problems", problems.any { "chain" in it })
-    }
+ @Test
+ fun `approval name defaults to the canonical name`() {
+ val rules = rulesOf("get_battery_status" to ToolNameAliases.CompatibilityRule(canonicalName = "device_info"))
+ val resolved = ToolNameAliases.resolveRawCall("get_battery_status", "{}", rules)
+ assertEquals("device_info", resolved.approvalName)
+ }
 
-    @Test
-    fun `validate rejects a cycle`() {
-        val problems = ToolNameAliases.validate(mapOf("a_tool" to "b_tool", "b_tool" to "a_tool"))
-        assertTrue("cycle must be rejected, got $problems", problems.isNotEmpty())
-    }
+ @Test
+ fun `a rule may preserve a persisted calls approval grants via approvalName`() {
+ // Approval grants are keyed by the REAL tool name string. When a legacy tool folds
+ // into a composite, a merge PR can keep the stored call's existing grants working
+ // by pinning approvalName to the legacy name.
+ val rules = rulesOf(
+ "get_volume" to ToolNameAliases.CompatibilityRule(
+ canonicalName = "device_control",
+ approvalName = "get_volume",
+ ),
+ )
+ val resolved = ToolNameAliases.resolveRawCall("get_volume", "{}", rules)
+ assertEquals("device_control", resolved.canonicalName)
+ assertEquals("get_volume", resolved.approvalName)
+ }
 
-    @Test
-    fun `validate rejects blank legacy names`() {
-        val problems = ToolNameAliases.validate(mapOf("" to "device_info", "  " to "files"))
-        assertEquals(2, problems.count { "blank legacy name" in it })
-    }
+ // ---- 8. Structural validation -----------------------------------------------------
 
-    @Test
-    fun `validate rejects a blank canonical target`() {
-        val problems = ToolNameAliases.validate(mapOf("old_tool" to ""))
-        assertTrue("blank target must be rejected, got $problems", problems.any { "blank canonical" in it })
-    }
+ @Test
+ fun `validate flags self-alias chains blanks and mcp rules`() {
+ val problems = ToolNameAliases.validate(
+ rulesOf(
+ "a" to ToolNameAliases.CompatibilityRule(canonicalName = "a"),
+ "b" to ToolNameAliases.CompatibilityRule(canonicalName = "c"),
+ "c" to ToolNameAliases.CompatibilityRule(canonicalName = "d"),
+ "mcp__srv__x" to ToolNameAliases.CompatibilityRule(canonicalName = "y"),
+ "" to ToolNameAliases.CompatibilityRule(canonicalName = "z"),
+ ),
+ )
+ assertTrue(problems.any { it.contains("self-alias") })
+ assertTrue(problems.any { it.contains("chain") })
+ assertTrue(problems.any { it.contains("blank legacy") })
+ assertTrue(problems.any { it.contains("mcp-prefixed") })
+ }
 
-    @Test
-    fun `validate rejects aliasing an mcp name`() {
-        val problems = ToolNameAliases.validate(mapOf("mcp__server__tool" to "files"))
-        assertTrue("mcp key must be rejected, got $problems", problems.any { "MCP-relayed" in it })
-    }
-
-    @Test
-    fun `validate rejects an mcp target`() {
-        val problems = ToolNameAliases.validate(mapOf("legacy_tool" to "mcp__server__tool"))
-        assertTrue("mcp target must be rejected, got $problems", problems.any { "runtime-minted" in it })
-    }
-
-    // ---- 6. Loop-guard / policy canonicalisation contract -------------------------------
-
-    @Test
-    fun `legacy and canonical spellings produce the same loop signature`() {
-        // The loop guard compares "<canonicalName>::args" strings. If the two spellings produced
-        // different signatures, a model that alternated them would never trip the guard.
-        val table = mapOf("old_tool" to "new_tool")
-        val args = """{"a":1}"""
-
-        val legacySignature = ToolNameAliases.resolve("old_tool", table).canonicalName + "::" + args
-        val canonicalSignature = ToolNameAliases.resolve("new_tool", table).canonicalName + "::" + args
-
-        assertEquals(canonicalSignature, legacySignature)
-        assertEquals("new_tool::$args", legacySignature)
-    }
-
-    @Test
-    fun `policy sees the canonical name while the requested name is preserved`() {
-        // Documents the contract GenerationHandler relies on: policy (HARDLINE / approval)
-        // reads canonicalName, the message part keeps requestedName.
-        val table = mapOf("legacy_shell_tool" to "shizuku_exec")
-        val resolution = ToolNameAliases.resolve("legacy_shell_tool", table)
-
-        assertEquals("legacy_shell_tool", resolution.requestedName)  // history / envelope
-        assertEquals("shizuku_exec", resolution.canonicalName)       // policy / dispatch
-    }
-
-    // ---- 7. HARDLINE is decided by the canonical name (real guard, no mocks) ------------
-
-    @Test
-    fun `hardline blocks the canonical shell tool`() {
-        // Baseline for the two tests below: the shipped guard DOES match shizuku_exec.
-        val reason = HardlineCommandGuard.checkTool("shizuku_exec", """{"command":"rm -rf /"}""")
-        assertNotNull("guard must block rm -rf / on shizuku_exec", reason)
-    }
-
-    @Test
-    fun `hardline does not recognise a legacy name on its own`() {
-        // Why resolution must happen BEFORE the guard: HardlineCommandGuard matches on literal
-        // tool names, so an unresolved legacy spelling sails straight past it. This test is the
-        // negative control that proves the resolution step in GenerationHandler /
-        // DirectModeActionRunner / WorkflowEngine / ChatService is load-bearing.
-        val reason = HardlineCommandGuard.checkTool("legacy_shell_tool", """{"command":"rm -rf /"}""")
-        assertNull("an unknown name is not covered by the guard's name-based arms", reason)
-    }
-
-    @Test
-    fun `hardline applies to the canonical name a legacy alias resolves to`() {
-        // The actual rule: resolve first, then check. A legacy alias pointing at a shell tool is
-        // judged by the canonical tool's rules, so the alias cannot be used as a bypass.
-        val table = mapOf("legacy_shell_tool" to "shizuku_exec")
-        val args = """{"command":"rm -rf /"}"""
-
-        val canonical = ToolNameAliases.resolve("legacy_shell_tool", table).canonicalName
-        val reason = HardlineCommandGuard.checkTool(canonical, args)
-
-        assertNotNull("resolving to shizuku_exec must make the guard fire", reason)
-    }
-
-    @Test
-    fun `approval is decided by the canonical name`() {
-        // Same shape for the approval tier: ToolApprovalDefaults.requiresApproval is a
-        // name-membership test, so an unresolved legacy name would silently skip the prompt.
-        assertTrue(ToolApprovalDefaults.requiresApproval("shizuku_exec"))
-
-        val table = mapOf("legacy_shell_tool" to "shizuku_exec")
-        val canonical = ToolNameAliases.resolve("legacy_shell_tool", table).canonicalName
-        assertTrue(ToolApprovalDefaults.requiresApproval(canonical))
-    }
+ @Test
+ fun `validate passes a sane table`() {
+ assertTrue(ToolNameAliases.validate(rulesOf("list_files" to listFilesRule)).isEmpty())
+ }
 }

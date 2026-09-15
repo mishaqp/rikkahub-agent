@@ -1,145 +1,253 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import me.rerere.ai.core.Tool
 
 /**
- * Tool Name Compatibility Layer.
+ * Tool Call Compatibility Layer (name + args).
  *
  * ## Why this exists
  *
- * Tool names are persisted outside the running process: scheduled jobs (`mode='direct'`
- * action lists), workflow definitions, `UIMessagePart.Tool.toolName` inside stored
- * conversations, and Telegram/headless call sites all keep the *string* a model emitted
- * at the time the row was written. A later refactor that renames or folds an exposed tool
- * into a composite would therefore break every already-saved reference with
- * `tool_not_found` / `unknown_tool` — for rows the user cannot even edit any more.
+ * Tool calls are persisted outside the running process: scheduled jobs (mode='direct'
+ * action lists), workflow definitions, UIMessagePart.Tool (toolName + input) inside
+ * stored conversations, and Telegram/headless call sites all keep the exact strings a
+ * model emitted at the time the row was written. A later refactor that renames a tool —
+ * or folds several tools into one composite — would break every saved reference with
+ * tool_not_found, for rows the user cannot even edit any more.
  *
- * This object is the single, deliberately tiny indirection that lets such a rename happen:
- * a stored **legacy** name is mapped to the **canonical current** name before anything that
- * cares about the real action (HARDLINE, approval, loop guard, tool lookup, execution) runs.
+ * A composite merge changes MORE than the name: the persisted call also carries args in
+ * the OLD tool's schema, e.g. get_battery_status {} -> device_info with section=battery,
+ * or list_files with path -> files with action=list plus path. This layer therefore
+ * resolves the whole CALL, not just the name:
+ *
+ * requestedName + requestedInput -> canonicalName + canonicalInput
  *
  * ## Contract
  *
- *  - **Flat, one hop.** `legacy -> canonical`. A target must not itself be a key of the map;
- *    chains are rejected by [validate]. That keeps resolution O(1) and impossible to
- *    mis-order.
- *  - **Unknown names pass through unchanged.** No entry means "this is already canonical",
- *    so the helper is a no-op on every name the app ships today.
- *  - **MCP names are never aliased.** Anything starting with `mcp__` is returned verbatim —
- *    those are namespaced per-server names minted at runtime by
- *    [me.rerere.rikkahub.data.ai.mcp.buildMcpToolName], not part of this table.
- *  - **Policy sees the canonical name.** Callers must resolve *before* consulting
- *    [HardlineCommandGuard] / [ToolApprovalDefaults], never after: resolving afterwards would
- *    let a legacy alias to a shell tool skip the safety floor that the canonical name trips.
- *  - **The requested name is never overwritten.** History, debugging output and error
- *    envelopes keep the name the model actually used; only internal policy/dispatch lookups
- *    switch to the canonical name.
+ * - One hop. legacy -> canonical. A canonical name must not itself be a key of the
+ * table; chains are rejected by [validate].
+ * - Strict no-op without a rule. Unknown names (i.e. every name the app ships today,
+ * because [RULES] is empty) are returned untouched: the requested input string is
+ * handed back byte-identical, never parse-then-reserialized.
+ * - MCP names are never transformed. Anything starting with the mcp prefix is returned
+ * verbatim — those are runtime-minted per-server names, not part of this table.
+ * - Policy sees the canonical call. HARDLINE, approval, loop signature, tool lookup
+ * and execute() all consume [ResolvedToolCall.canonicalName] /
+ * [ResolvedToolCall.canonicalInput]. Resolving later would let a legacy alias to a
+ * shell tool slip past the safety floor, or let a transformed args string smuggle a
+ * command the guard never inspected.
+ * - History keeps the requested form. [ResolvedToolCall.requestedName] /
+ * [ResolvedToolCall.requestedInput] are never rewritten — logs, error envelopes and
+ * stored message parts keep what the model (or the old build) actually emitted.
+ * - Failure means refuse, never execute. When a rule matches but its args cannot be
+ * parsed or its transform throws, [ResolvedToolCall.resolutionError] is non-null and
+ * the caller MUST surface a controlled error instead of executing anything — and must
+ * NOT silently fall back to the legacy args.
+ *
+ * ## Approval semantics across a composite merge
+ *
+ * Approval grants (ToolApprovalAllowList / ToolApprovalPreferences) are keyed by the real
+ * tool NAME string. When several legacy tools fold into one composite they may carry
+ * different approval expectations (a read tool vs a write tool). The seam for that
+ * is [CompatibilityRule.approvalName]: by default policy keys off the canonical name;
+ * a merge PR that needs to preserve a persisted call's existing grants may set
+ * approvalName to the legacy name so the stored call keeps the approval entry it
+ * already had. Action-level approval of a NEW composite (read/write/delete distinctions
+ * inside one tool) is deliberately NOT solved here — that belongs to the concrete
+ * composite-tool PR, once its real action schema exists.
  *
  * ## Current state of the table
  *
- * [ALIASES] is intentionally **empty**. This file is pure infrastructure: it prepares the
- * rename path so a future "merge N tools into one composite" PR only has to add entries
- * here. Until such a PR lands, [canonicalName] returns its argument unchanged for every
- * input and the app behaves exactly as it did before this layer existed.
+ * [RULES] is intentionally EMPTY: this PR ships pure infrastructure. The first entry
+ * lands only as the last step of a merge PR, once its canonical tool is registered.
  */
 object ToolNameAliases {
 
-    /** Namespace prefix minted at runtime for MCP-relayed tools. Never aliased. */
-    private const val MCP_TOOL_PREFIX = "mcp__"
+ /** Namespace prefix minted at runtime for MCP-relayed tools. Never transformed. */
+ private const val MCP_TOOL_PREFIX = "mcp__"
 
-    /**
-     * Production alias table: `legacyName -> canonicalCurrentName`.
-     *
-     * MUST stay empty until the corresponding composite tool actually exists. Adding an entry
-     * here is the *last* step of a merge PR, never the first: the canonical target has to be a
-     * registered tool name, or resolution would turn a working legacy call into a lookup miss.
-     *
-     * Invariants (enforced by [validate] in tests):
-     *  - no blank key or value;
-     *  - no self-alias (`A -> A`);
-     *  - no chain (`A -> B` where `B` is itself a key);
-     *  - no `mcp__` key.
-     */
-    val ALIASES: Map<String, String> = emptyMap()
+ /**
+ * Transforms the args of a persisted legacy call into the args the canonical
+ * (composite) tool expects. Works on [JsonElement] because Tool.execute takes a
+ * JsonElement — an object is the common case, but the layer must not narrow the
+ * contract. Pure and total by contract: no I/O, no global state.
+ */
+ fun interface ArgsTransform {
+ fun transform(legacyArgs: JsonElement): JsonElement
 
-    /**
-     * Outcome of resolving one requested name. Carries both spellings so a caller can keep the
-     * original for history/telemetry while routing policy and dispatch through the canonical one.
-     */
-    data class Resolution(
-        val requestedName: String,
-        val canonicalName: String,
-    ) {
-        /** True when [requestedName] was a legacy name that [ALIASES] redirected. */
-        val aliased: Boolean get() = requestedName != canonicalName
-    }
+ companion object {
+ /** Pass-through for rules that rename only. */
+ val IDENTITY: ArgsTransform = ArgsTransform { it }
+ }
+ }
 
-    /**
-     * Resolve [requested] against the production table. Returns a [Resolution] whose
-     * [Resolution.canonicalName] equals [requested] when nothing matched — the helper is a
-     * no-op for every currently-shipped tool name.
-     */
-    fun resolve(requested: String): Resolution = resolve(requested, ALIASES)
+ /**
+ * One compatibility rule: legacy name -> canonical name + args transform.
+ *
+ * [approvalName] — the name approval policy should look up. Null means the canonical
+ * name (today's behaviour for everything). See the class-level docs for when a merge
+ * PR would pin this to the legacy name instead.
+ */
+ data class CompatibilityRule(
+ val canonicalName: String,
+ val transformArgs: ArgsTransform = ArgsTransform.IDENTITY,
+ val approvalName: String? = null,
+ )
 
-    /** Convenience for call sites that only need the canonical spelling. */
-    fun canonicalName(requested: String): String = resolve(requested).canonicalName
+ /**
+ * Production rule table: legacyName -> rule. EMPTY in this PR.
+ * Invariants (enforced by [validate]): no blank names, no self-alias, no chains,
+ * no mcp-prefixed keys or targets.
+ */
+ val RULES: Map<String, CompatibilityRule> = emptyMap()
 
-    /**
-     * Find the [Tool] that should execute [requestedName], resolving a legacy name first.
-     *
-     * Returns null exactly when the canonical name is not among [tools] — i.e. the caller's
-     * existing "tool_not_found" path stays in charge of the error envelope.
-     */
-    fun resolveTool(tools: List<Tool>, requestedName: String): Tool? {
-        val canonical = canonicalName(requestedName)
-        return tools.firstOrNull { it.name == canonical }
-    }
+ /**
+ * The outcome of resolving one requested call.
+ *
+ * [resolutionError] non-null means the caller must refuse execution and surface the
+ * error; [canonicalName]/[canonicalInput] then simply mirror the requested values.
+ */
+ data class ResolvedToolCall(
+ val requestedName: String,
+ val requestedInput: String,
+ val canonicalName: String,
+ val canonicalInput: String,
+ val approvalName: String,
+ val resolutionError: String? = null,
+ ) {
+ /** True when a rule rewrote the call (name and/or args differ). */
+ val aliased: Boolean
+ get() = requestedName != canonicalName || requestedInput != canonicalInput
 
-    /**
-     * Test/inspection seam: resolve against an explicit table instead of [ALIASES]. Production
-     * call sites must use the single-argument overload; this exists so the rules above can be
-     * exercised with synthetic mappings.
-     */
-    internal fun resolve(requested: String, aliases: Map<String, String>): Resolution {
-        if (requested.isEmpty()) return Resolution(requested, requested)
-        // MCP-relayed tools are namespaced at runtime and are not part of this table. Skip the
-        // lookup entirely rather than relying on the table happening to have no `mcp__` key.
-        if (requested.startsWith(MCP_TOOL_PREFIX)) return Resolution(requested, requested)
-        return Resolution(requested, aliases[requested] ?: requested)
-    }
+ /**
+ * Loop-guard signature over the CANONICAL form: a legacy call and the same
+ * action emitted canonically collide into one signature instead of two.
+ */
+ val signature: String
+ get() = canonicalName + "::" + canonicalInput
+ }
 
-    /**
-     * Structural validation of an alias table. Returns a list of human-readable problems; an
-     * empty list means the table satisfies every invariant in [ALIASES]'s documentation.
-     *
-     * Called by unit tests today and by the future merge PR before it ships a non-empty table —
-     * a cyclic or chained table would make resolution non-deterministic in a way that is very
-     * hard to debug from a `tool_not_found` seen only on the user's device.
-     */
-    internal fun validate(aliases: Map<String, String>): List<String> {
-        val problems = mutableListOf<String>()
-        for ((legacy, canonical) in aliases) {
-            if (legacy.isBlank()) {
-                problems += "blank legacy name"
-                continue
-            }
-            if (canonical.isBlank()) {
-                problems += "'$legacy' maps to a blank canonical name"
-                continue
-            }
-            if (legacy == canonical) {
-                problems += "'$legacy' is a self-alias"
-            }
-            if (legacy.startsWith(MCP_TOOL_PREFIX)) {
-                problems += "'$legacy' is an MCP-relayed name and must not be aliased"
-            }
-            if (canonical.startsWith(MCP_TOOL_PREFIX)) {
-                problems += "'$legacy' targets an MCP-relayed name, which is runtime-minted"
-            }
-            if (canonical in aliases) {
-                problems += "'$legacy' -> '$canonical' is a chain: '$canonical' is itself a legacy name"
-            }
-        }
-        return problems
-    }
+ /**
+ * Resolve a call whose args are a raw JSON string (message parts, persisted rows).
+ * Without a matching rule this is a strict byte-level no-op — the requested string
+ * is returned untouched.
+ */
+ fun resolveCall(requestedName: String, requestedInput: String): ResolvedToolCall =
+ resolveRawCall(requestedName, requestedInput, RULES)
+
+ /**
+ * Resolve a call whose args are already a [JsonElement] (workflow / direct-mode
+ * actions, cron-job validation).
+ */
+ fun resolveCall(requestedName: String, requestedInput: JsonElement): ResolvedToolCall =
+ resolveCallWithRules(requestedName, requestedInput, RULES)
+
+ /** Test/inspection seam: raw-args resolution against an explicit table. */
+ internal fun resolveRawCall(
+ requestedName: String,
+ requestedInput: String,
+ rules: Map<String, CompatibilityRule>,
+ ): ResolvedToolCall {
+ if (requestedName.isEmpty()) return passthrough(requestedName, requestedInput)
+ if (requestedName.startsWith(MCP_TOOL_PREFIX)) return passthrough(requestedName, requestedInput)
+ val rule = rules[requestedName] ?: return passthrough(requestedName, requestedInput)
+ val parsed = runCatching { Json.parseToJsonElement(requestedInput) }.getOrElse {
+ return failure(requestedName, requestedInput, "args_unparseable: " + (it.message ?: "json_parse_failed"))
+ }
+ return applyRule(requestedName, requestedInput, parsed, rule)
+ }
+
+ /** Test/inspection seam: element-args resolution against an explicit table. */
+ internal fun resolveCallWithRules(
+ requestedName: String,
+ requestedInput: JsonElement,
+ rules: Map<String, CompatibilityRule>,
+ ): ResolvedToolCall {
+ if (requestedName.isEmpty()) return passthrough(requestedName, requestedInput.toString())
+ if (requestedName.startsWith(MCP_TOOL_PREFIX)) return passthrough(requestedName, requestedInput.toString())
+ val rule = rules[requestedName] ?: return passthrough(requestedName, requestedInput.toString())
+ return applyRule(requestedName, requestedInput.toString(), requestedInput, rule)
+ }
+
+ private fun applyRule(
+ requestedName: String,
+ requestedInput: String,
+ parsedArgs: JsonElement,
+ rule: CompatibilityRule,
+ ): ResolvedToolCall {
+ val canonicalArgs = try {
+ rule.transformArgs.transform(parsedArgs)
+ } catch (e: Exception) {
+ // Exception, not Throwable: JVM-fatal errors (OOM, StackOverflow) propagate.
+ return failure(requestedName, requestedInput, "transform_failed: " + (e.message ?: e.javaClass.simpleName))
+ }
+ return ResolvedToolCall(
+ requestedName = requestedName,
+ requestedInput = requestedInput,
+ canonicalName = rule.canonicalName,
+ canonicalInput = canonicalArgs.toString(),
+ approvalName = rule.approvalName ?: rule.canonicalName,
+ )
+ }
+
+ private fun passthrough(name: String, input: String): ResolvedToolCall =
+ ResolvedToolCall(name, input, name, input, name, null)
+
+ private fun failure(name: String, input: String, why: String): ResolvedToolCall =
+ ResolvedToolCall(name, input, name, input, name, why)
+
+ /**
+ * Name-only convenience retained for call sites that genuinely have no args.
+ * New code should resolve the whole call via [resolveCall].
+ */
+ fun canonicalName(requested: String): String {
+ if (requested.isEmpty()) return requested
+ if (requested.startsWith(MCP_TOOL_PREFIX)) return requested
+ return RULES[requested]?.canonicalName ?: requested
+ }
+
+ /**
+ * Find the [Tool] that should execute [requestedName], resolving a legacy name first.
+ * Returns null exactly when the canonical name is not among [tools] — the caller's
+ * existing tool_not_found path stays in charge of the error envelope.
+ */
+ fun resolveTool(tools: List<Tool>, requestedName: String): Tool? {
+ val canonical = canonicalName(requestedName)
+ return tools.firstOrNull { it.name == canonical }
+ }
+
+ /**
+ * Structural validation of a rule table. Returns human-readable problems; an empty
+ * list means every invariant holds. Exercised by unit tests today and required before
+ * any future merge PR ships a non-empty table.
+ */
+ internal fun validate(rules: Map<String, CompatibilityRule>): List<String> {
+ val problems = mutableListOf<String>()
+ for ((legacy, rule) in rules) {
+ if (legacy.isBlank()) {
+ problems += "blank legacy name"
+ continue
+ }
+ val canonical = rule.canonicalName
+ if (canonical.isBlank()) {
+ problems += "maps to a blank canonical name: " + legacy
+ continue
+ }
+ if (legacy == canonical) problems += "self-alias: " + legacy
+ if (legacy.startsWith(MCP_TOOL_PREFIX)) {
+ problems += "mcp-prefixed legacy name must not be aliased: " + legacy
+ }
+ if (canonical.startsWith(MCP_TOOL_PREFIX)) {
+ problems += "targets an mcp-prefixed runtime-minted name: " + legacy
+ }
+ if (canonical in rules) {
+ problems += "chain: " + legacy + " -> " + canonical + " which is itself a legacy name"
+ }
+ if (rule.approvalName != null && rule.approvalName.isBlank()) {
+ problems += "blank approvalName: " + legacy
+ }
+ }
+ return problems
+ }
 }

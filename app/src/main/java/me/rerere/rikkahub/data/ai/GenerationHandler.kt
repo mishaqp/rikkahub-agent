@@ -70,7 +70,6 @@ import kotlin.uuid.Uuid
 private const val TAG = "GenerationHandler"
 private const val MAX_TOOL_OUTPUT_CHARS = 32 * 1024
 private const val TOOL_OUTPUT_PREVIEW_CHARS = 4 * 1024
-
 private const val GENERATION_STREAM_RETRY_INITIAL_DELAY_MS = 750L
 private const val GENERATION_STREAM_RETRY_MAX_DELAY_MS = 4_000L
 
@@ -104,7 +103,8 @@ private fun isCancellationFailure(failure: Throwable): Boolean =
  * cannot help, so the caller should log it and let the generation end normally instead of
  * synthesizing a retryable failure.
  */
-internal fun shouldReportEmptyGenerationStream(receivedAnyChunk: Boolean): Boolean = !receivedAnyChunk
+internal fun shouldReportEmptyGenerationStream(receivedAnyChunk: Boolean): Boolean =
+    !receivedAnyChunk
 
 internal fun shouldRetryGenerationStreamFailure(
     failure: Throwable,
@@ -215,9 +215,15 @@ private fun clearRetryStatus(processingStatus: MutableStateFlow<String?>) {
 // Start/End markers and Usage/Finish bookkeeping chunks don't, mirroring the old
 // choice.delta/message.parts.isNotEmpty() check against the pre-refactor chunk shape.
 private fun isMeaningfulStreamChunk(chunk: StreamChunk): Boolean = when (chunk) {
-    is StreamChunk.TextDelta, is StreamChunk.ReasoningDelta, is StreamChunk.ToolCallDelta,
-    is StreamChunk.ImageDelta, is StreamChunk.ImageSnapshot, is StreamChunk.ServerToolStart,
-    is StreamChunk.ServerToolInputDelta, is StreamChunk.ServerToolEnd, is StreamChunk.Annotations -> true
+    is StreamChunk.TextDelta,
+    is StreamChunk.ReasoningDelta,
+    is StreamChunk.ToolCallDelta,
+    is StreamChunk.ImageDelta,
+    is StreamChunk.ImageSnapshot,
+    is StreamChunk.ServerToolStart,
+    is StreamChunk.ServerToolInputDelta,
+    is StreamChunk.ServerToolEnd,
+    is StreamChunk.Annotations -> true
     else -> false
 }
 
@@ -236,8 +242,7 @@ private suspend fun <T> retryGenerationTransportRequest(
                     retryAttempt = retryAttempt,
                     maxRetries = maxRetries,
                     receivedMeaningfulOutput = false,
-                )
-            ) {
+                )) {
                 throw failure
             }
             val delayMs = generationStreamRetryDelayMs(retryAttempt)
@@ -373,7 +378,8 @@ private val FRESHNESS_TTL_MS_BY_TOOL: Map<String, Long> = mapOf(
  * reader). Keep it to genuine read-only observers: wrongly adding an ACTION tool here would
  * stop it from resetting the counter and reintroduce the false-positive loop_detected.
  */
-private val READ_ONLY_OBSERVATION_TOOLS: Set<String> = FRESHNESS_TTL_MS_BY_TOOL.keys + "find_node"
+private val READ_ONLY_OBSERVATION_TOOLS: Set<String> =
+    FRESHNESS_TTL_MS_BY_TOOL.keys + "find_node"
 
 /** One prior executed tool call in the current turn, in chronological order. */
 internal data class PriorToolCall(
@@ -392,7 +398,6 @@ internal data class LoopGuardDecision(
  * the act-observe reset and freshness-TTL rules can be unit-tested without an Android Context.
  */
 internal object LoopGuard {
-
     fun evaluate(
         priorCalls: List<PriorToolCall>,
         toolName: String,
@@ -408,14 +413,14 @@ internal object LoopGuard {
         // turn (re-sending the same message 3x is a loop regardless of what ran between).
         val relevant = if (toolName in readOnlyTools) {
             val lastActionIdx = priorCalls.indexOfLast { it.toolName !in readOnlyTools }
-            if (lastActionIdx >= 0) priorCalls.subList(lastActionIdx + 1, priorCalls.size) else priorCalls
+            if (lastActionIdx >= 0) priorCalls.subList(lastActionIdx + 1, priorCalls.size)
+            else priorCalls
         } else {
             priorCalls
         }
         val matching = relevant.filter { it.signature == signature }
         val priorOccurrences = matching.size
         if (priorOccurrences < threshold) return LoopGuardDecision(false, priorOccurrences)
-
         // Freshness-TTL bypass: a real-time reader re-called after its TTL is a refresh, not
         // a loop; let it through so the model gets a fresh reading instead of a stale one.
         val ttl = freshnessTtlMs[toolName]
@@ -435,7 +440,6 @@ class GenerationHandler(
     private val aiLoggingManager: AILoggingManager,
     private val systemPromptBuilder: SystemPromptBuilder,
 ) {
-
     fun generateText(
         settings: Settings,
         model: Model,
@@ -486,10 +490,7 @@ class GenerationHandler(
         var messages: List<UIMessage> = messages.map { msg ->
             val newParts = msg.parts.map { part ->
                 if (part is UIMessagePart.Tool && part.isInterruptedAttempt) {
-                    Log.w(
-                        TAG,
-                        "replay: ${part.toolName} (${part.toolCallId}) had executionStartedAt set with empty output → Denied(interrupted_unknown_outcome)"
-                    )
+                    Log.w(TAG, "replay: ${part.toolName} (${part.toolCallId}) had executionStartedAt set with empty output → Denied(interrupted_unknown_outcome)")
                     part.copy(approvalState = ToolApprovalState.Denied(
                         "interrupted_unknown_outcome: a previous attempt to execute this tool started " +
                             "but did not complete (process killed mid-execute). The side effect MAY OR " +
@@ -515,7 +516,6 @@ class GenerationHandler(
                 Log.w(TAG, "generateText: wall-clock cap (${ToolRuntimeLimits.turnBudgetMs}ms) hit at step #$stepIndex; force-ending turn")
                 break
             }
-
             // Repeated loop-guard trips mean the model is flailing: it bumps into the
             // guard, picks a different tool, that one also gets guarded, and so on. After
             // N trips we just stop — the model is not going to recover, and every extra
@@ -537,16 +537,24 @@ class GenerationHandler(
                     }
                     buildMemoryTools(
                         json = json,
-                        onCreation = { content -> memoryRepo.addMemory(memoryAssistantId, content) },
-                        onUpdate = { id, content -> memoryRepo.updateContent(id, content) },
-                        onDelete = { id -> memoryRepo.deleteMemory(id) }
+                        onCreation = { content ->
+                            memoryRepo.addMemory(memoryAssistantId, content)
+                        },
+                        onUpdate = { id, content ->
+                            memoryRepo.updateContent(id, content)
+                        },
+                        onDelete = { id ->
+                            memoryRepo.deleteMemory(id)
+                        }
                     ).let(this::addAll)
                 }
                 addAll(tools)
             }
 
             // Check if we have tool calls ready to continue after user interaction.
-            val pendingTools = messages.lastOrNull()?.getTools()?.filter { it.canResumeExecution } ?: emptyList()
+            val pendingTools = messages.lastOrNull()?.getTools()?.filter {
+                it.canResumeExecution
+            } ?: emptyList()
 
             // Mixed-state guard: if the last message has tools STILL in Pending (waiting
             // on user approval keyboard) but nothing canResumeExecution, the existing
@@ -564,6 +572,7 @@ class GenerationHandler(
             }
 
             val toolsToProcess: List<UIMessagePart.Tool>
+
             // Skip generation if we have approved/denied tool calls to handle
             if (pendingTools.isEmpty()) {
                 try {
@@ -573,8 +582,8 @@ class GenerationHandler(
                         settings = settings,
                         systemAddendum = systemAddendum,
                         messages = messages,
-                        onUpdateMessages = { messages = it
-                            .transforms(
+                        onUpdateMessages = {
+                            messages = it.transforms(
                                 transformers = outputTransformers,
                                 context = context,
                                 model = model,
@@ -622,8 +631,8 @@ class GenerationHandler(
                         if (lastMsg != null) {
                             val newParts = lastMsg.parts.map { part ->
                                 if (part is UIMessagePart.Tool &&
-                                    (part.approvalState is ToolApprovalState.Auto || part.approvalState is ToolApprovalState.Pending)
-                                ) {
+                                    (part.approvalState is ToolApprovalState.Auto ||
+                                        part.approvalState is ToolApprovalState.Pending)) {
                                     part.copy(approvalState = ToolApprovalState.Denied(
                                         "generation_failed: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
                                     ))
@@ -635,7 +644,6 @@ class GenerationHandler(
                     }
                     throw t
                 }
-
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
                     context = context,
@@ -671,17 +679,12 @@ class GenerationHandler(
                 var hasPendingApproval = false
                 val updatedTools = ArrayList<UIMessagePart.Tool>(tools.size)
                 for (tool in tools) {
-                    // Tool-call compatibility layer: a stored/persisted call resolves to the
-                    // canonical current call — NAME and ARGS — BEFORE anything policy-relevant
-                    // looks at it. Resolving later would let a legacy alias to a shell tool
-                    // slip past the HARDLINE arm (which matches on the name/args it is handed),
-                    // or let transformed args smuggle a command the guard never inspected. The
-                    // requested name/input are deliberately NOT rewritten — they still travel
-                    // in the message part for history, logs and error envelopes.
+                    // Resolve the whole persisted call BEFORE policy: a future composite
+                    // migration may change both the tool name and its argument schema. Keep the
+                    // requested name/input in history, but let policy inspect the canonical call.
                     val resolvedCall = ToolNameAliases.resolveCall(tool.toolName, tool.input)
                     val canonicalToolName = resolvedCall.canonicalName
                     val toolDef = toolsInternal.find { it.name == canonicalToolName }
-
                     // HARDLINE check: certain command patterns (rm -rf /, mkfs, shutdown,
                     // fork bomb, …) are blocked unconditionally — even "Always Allow"
                     // can't override. We check BEFORE the auto-approval lookup so a
@@ -691,17 +694,12 @@ class GenerationHandler(
                     // envelope to the model without executing.
                     val hardlineReason = me.rerere.rikkahub.data.ai.tools
                         .HardlineCommandGuard.checkTool(canonicalToolName, resolvedCall.canonicalInput)
-
                     val transformed = when {
-                        // A stored call that cannot be adapted to the current tool surface
-                        // must never execute: flip it to Denied with the resolution error so
-                        // the downstream Denied branch emits a controlled envelope instead.
                         resolvedCall.resolutionError != null && tool.approvalState is ToolApprovalState.Auto -> {
                             Log.w(TAG, "compat-resolution failed for ${tool.toolName}: ${resolvedCall.resolutionError}")
                             tool.copy(approvalState = ToolApprovalState.Denied(
                                 "compatibility error: ${resolvedCall.resolutionError}. " +
-                                    "The stored call could not be adapted to the current tool " +
-                                    "schema and was not executed."
+                                    "The stored call could not be adapted to the current tool schema and was not executed."
                             ))
                         }
                         hardlineReason != null && tool.approvalState is ToolApprovalState.Auto -> {
@@ -722,7 +720,7 @@ class GenerationHandler(
                             // are typically <5 per turn so the latency is negligible, and
                             // freshness matters for the YOLO toggle / mid-iteration grants.
                             if (isToolAutoApproved(resolvedCall.approvalName)) {
-                                tool // leave as Auto so the executor runs it without prompting
+                                tool  // leave as Auto so the executor runs it without prompting
                             } else {
                                 hasPendingApproval = true
                                 tool.copy(approvalState = ToolApprovalState.Pending)
@@ -733,6 +731,7 @@ class GenerationHandler(
                             hasPendingApproval = true
                             tool
                         }
+
                         else -> tool
                     }
                     updatedTools.add(transformed)
@@ -787,6 +786,7 @@ class GenerationHandler(
                             )
                         )
                     }
+
                     is ToolApprovalState.Answered -> {
                         // Tool was answered by user (e.g., ask_user tool)
                         val answer = (tool.approvalState as ToolApprovalState.Answered).answer
@@ -796,43 +796,32 @@ class GenerationHandler(
                             )
                         )
                     }
+
                     is ToolApprovalState.Pending -> {
                         // Should not reach here, but just in case
                     }
+
                     else -> {
                         // Auto or Approved - execute the tool.
                         //
-                        // Tool-call compatibility layer (execution path). This loop is
-                        // reached both from the approval loop above and from the resume
-                        // path, which rebuilds its list from persisted message parts — so
-                        // the canonical call is resolved here again rather than inherited
-                        // from the earlier scope.
+                        // Resolve again on the execution/resume path because persisted
+                        // message parts keep the requested call rather than the canonical one.
                         val resolvedCall = ToolNameAliases.resolveCall(tool.toolName, tool.input)
                         val canonicalToolName = resolvedCall.canonicalName
-
-                        // A stored call whose rule cannot be applied is never executed —
-                        // not with canonical args (there are none) and not with the legacy
-                        // args either. Surface a controlled envelope instead.
                         if (resolvedCall.resolutionError != null) {
                             Log.w(TAG, "generateText: compat-resolution failed for ${tool.toolName}: ${resolvedCall.resolutionError}")
                             executedTools += tool.copy(
-                                output = listOf(
-                                    UIMessagePart.Text(
-                                        json.encodeToString(buildJsonObject {
-                                            put("error", JsonPrimitive("compat_resolution_failed"))
-                                            put("detail", JsonPrimitive(resolvedCall.resolutionError))
-                                            put("recovery", JsonPrimitive(
-                                                "The stored call could not be adapted to the current tool " +
-                                                    "schema, so it was NOT executed. Re-issue the call against " +
-                                                    "the current tool surface."
-                                            ))
-                                        })
-                                    )
-                                )
+                                output = listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
+                                    put("error", JsonPrimitive("compat_resolution_failed"))
+                                    put("detail", JsonPrimitive(resolvedCall.resolutionError))
+                                    put("recovery", JsonPrimitive(
+                                        "The stored call could not be adapted to the current tool schema, so it was NOT executed."
+                                    ))
+                                })))
                             )
                             return@forEach
                         }
-
+                        //
                         // Defence-in-depth HARDLINE re-check: the primary check at line ~442
                         // only runs when approvalState is Auto (the generation step that just
                         // proposed the tool). On the resume path (pendingTools branch above)
@@ -862,11 +851,8 @@ class GenerationHandler(
                         // Loop-guard: check whether the model has already called this exact
                         // tool with the same args multiple times in this turn. Refuse a
                         // repeat run and inject a "loop_detected" envelope so the model has
-                        // to pivot to a different approach. Cost safety net. The signature is
-                        // built from the CANONICAL name + args, so a legacy spelling and the
-                        // canonical spelling of the same action collide into one signature.
+                        // to pivot to a different approach. Cost safety net.
                         val signature = resolvedCall.signature
-
                         // "This turn" = since the most recent user message. Earlier
                         // identical calls in PREVIOUS turns aren't the model flailing
                         // now — they're history, and counting them produces a confusing
@@ -877,7 +863,6 @@ class GenerationHandler(
                             (turnStartIndex + 1).coerceAtLeast(0),
                             messages.size
                         )
-
                         // Flatten this turn's executed tool calls in chronological order. The
                         // epoch ms (for the freshness-TTL bypass) comes from the parent
                         // message's finish/create time, matching the prior inline behaviour.
@@ -886,10 +871,10 @@ class GenerationHandler(
                                 .toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds()
                             msg.parts.filterIsInstance<UIMessagePart.Tool>()
                                 .filter { it.isExecuted }
-                                // Canonicalise prior calls too (name + args), so a turn that
-                                // mixed a legacy and a canonical spelling of the same action
-                                // counts as ONE tool rather than two — otherwise the guard
-                                // would see two distinct signatures and never trip.
+                                // Canonicalise prior calls too, so a turn that mixed a legacy and
+                                // a canonical spelling of the same action counts as ONE tool
+                                // rather than two — otherwise the guard would see two distinct
+                                // signatures and never trip.
                                 .map {
                                     val resolvedPrior = ToolNameAliases.resolveCall(it.toolName, it.input)
                                     PriorToolCall(
@@ -899,7 +884,6 @@ class GenerationHandler(
                                     )
                                 }
                         }
-
                         val loopDecision = LoopGuard.evaluate(
                             priorCalls = priorCalls,
                             toolName = canonicalToolName,
@@ -917,8 +901,7 @@ class GenerationHandler(
                                             buildJsonObject {
                                                 put("error", JsonPrimitive("loop_detected"))
                                                 put(
-                                                    "recovery",
-                                                    JsonPrimitive(
+                                                    "recovery", JsonPrimitive(
                                                         "You have already called ${tool.toolName} with identical arguments " +
                                                             "${priorOccurrences} time(s) in this turn without making progress. " +
                                                             "Stop retrying. Either: (a) change the args meaningfully, (b) try a " +
@@ -939,16 +922,16 @@ class GenerationHandler(
                             // docs) will pivot to a different approach.
                             return@forEach
                         }
-
                         // Pre-parse args BEFORE the runCatching block so we can surface a
                         // clean structured envelope when the LLM provider truncates the
                         // streaming response mid-string (max_tokens hit, network drop, etc.).
                         // Without this, kotlinx.serialization's raw exception message —
                         // which includes the entire failed input — lands in the LLM-facing
                         // `detail` field, can be thousands of tokens, and the model often
-                        // retries the same too-big call. The parsed payload is the CANONICAL
-                        // input, which equals the requested input whenever no rule applies.
-                        val parsedArgs = runCatching { json.parseToJsonElement(resolvedCall.canonicalInput.ifBlank { "{}" }) }
+                        // retries the same too-big call.
+                        val parsedArgs = runCatching {
+                            json.parseToJsonElement(resolvedCall.canonicalInput.ifBlank { "{}" })
+                        }
                         if (parsedArgs.isFailure) {
                             val cause = parsedArgs.exceptionOrNull()
                             Log.w(TAG, "tool ${tool.toolName} args failed to parse (likely truncated stream)", cause)
@@ -974,14 +957,16 @@ class GenerationHandler(
                                                         "content."
                                                 ),
                                             )
-                                            put("exception", JsonPrimitive(cause?.javaClass?.simpleName ?: "JsonParseException"))
+                                            put(
+                                                "exception",
+                                                JsonPrimitive(cause?.javaClass?.simpleName ?: "JsonParseException"),
+                                            )
                                         })
                                     )
                                 )
                             )
                             return@forEach
                         }
-
                         // Resolve the tool def BEFORE the runCatching block, same reason as
                         // parsedArgs above: this is not a random tool-body throw, so it gets
                         // its own structured envelope naming exactly what was called and what
@@ -1012,13 +997,11 @@ class GenerationHandler(
                             )
                             return@forEach
                         }
-
                         runCatching {
                             val args = parsedArgs.getOrThrow()
                             if (BuildConfig.DEBUG) {
                                 Log.i(TAG, "generateText: executing tool ${toolDef.name} with args: ${redactSecrets(args)}")
                             }
-
                             // Mark the tool as "execution started" BEFORE actually running.
                             // ChatService persists this when it sees the chunk so a process
                             // kill between mark-and-output leaves a clear breadcrumb on disk:
@@ -1037,14 +1020,14 @@ class GenerationHandler(
                                     emit(GenerationChunk.Messages(messages))
                                 }
                             }
-
                             // Hard-cap individual tool execution at the remaining wall-clock
                             // budget so a single tool with its OWN long timeout (camera 5min,
                             // ssh_exec timeout_seconds=300) can't carry the turn past the
                             // global ${ToolRuntimeLimits.turnBudgetMs}ms cap. If the budget is
                             // already blown when we start the tool, return a structured
                             // wall-clock envelope instead of even attempting.
-                            val remainingMs = ToolRuntimeLimits.turnBudgetMs - (android.os.SystemClock.elapsedRealtime() - turnStartMs)
+                            val remainingMs = ToolRuntimeLimits.turnBudgetMs -
+                                (android.os.SystemClock.elapsedRealtime() - turnStartMs)
                             val result = if (remainingMs <= 0L) {
                                 Log.w(TAG, "generateText: ${toolDef.name} skipped — wall-clock budget already exceeded")
                                 listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
@@ -1052,18 +1035,18 @@ class GenerationHandler(
                                     put("detail", JsonPrimitive("turn budget exceeded before tool started"))
                                 })))
                             } else {
-                                withTimeoutOrNull(remainingMs) { toolDef.execute(args) } ?: run {
-                                    Log.w(TAG, "generateText: ${toolDef.name} cancelled — wall-clock budget exhausted mid-execution")
-                                    listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
-                                        put("error", JsonPrimitive("tool_cancelled_wall_clock"))
-                                        put(
-                                            "detail",
-                                            JsonPrimitive("tool execution exceeded the ${ToolRuntimeLimits.turnBudgetMs / 1000}s turn budget")
-                                        )
-                                    })))
-                                }
+                                withTimeoutOrNull(remainingMs) { toolDef.execute(args) }
+                                    ?: run {
+                                        Log.w(TAG, "generateText: ${toolDef.name} cancelled — wall-clock budget exhausted mid-execution")
+                                        listOf(UIMessagePart.Text(json.encodeToString(buildJsonObject {
+                                            put("error", JsonPrimitive("tool_cancelled_wall_clock"))
+                                            put(
+                                                "detail",
+                                                JsonPrimitive("tool execution exceeded the ${ToolRuntimeLimits.turnBudgetMs / 1000}s turn budget")
+                                            )
+                                        })))
+                                    }
                             }
-
                             // Upstream tool-output truncation: when the workspace shell is
                             // available, oversized text output is spilled to /tool_outputs/
                             // and replaced with a preview + read/grep instructions so the
@@ -1114,7 +1097,7 @@ class GenerationHandler(
             }
 
             if (executedTools.isEmpty()) {
-                // No results to add (all tools were pending)        break
+                // No results to add (all tools were pending)
                 break
             }
 
@@ -1137,24 +1120,25 @@ class GenerationHandler(
                     )
                 )
             )
+
             onAfterToolExecution(messages)?.let { compactedMessages ->
                 Log.i(TAG, "generateText: replacing request history after tool execution")
                 messages = compactedMessages
             }
         }
-    }
 
-    .onStart {
-        // Reset per-turn navigation tracking and surface the overlay so the user
-        // sees that automation is happening even when the agent runs from Telegram.
-        AgentTurnTracker.reset()
-        AgentOverlay.show(context)
     }
-    .onCompletion {
-        AgentOverlay.hide(context)
-        handleAutoReturnAfterTurn()
-    }
-    .flowOn(Dispatchers.IO)
+        .onStart {
+            // Reset per-turn navigation tracking and surface the overlay so the user
+            // sees that automation is happening even when the agent runs from Telegram.
+            AgentTurnTracker.reset()
+            AgentOverlay.show(context)
+        }
+        .onCompletion {
+            AgentOverlay.hide(context)
+            handleAutoReturnAfterTurn()
+        }
+        .flowOn(Dispatchers.IO)
 
     /**
      * If the agent navigated away from RikkaHub during this turn (launch_app / open_url) and
@@ -1172,9 +1156,12 @@ class GenerationHandler(
         val destination = AgentTurnTracker.lastDestination()
         val currentForeground = RikkaAccessibilityService.instance
             ?.rootInActiveWindow?.packageName?.toString()
-        // The user manually switched apps mid-turn: leave them where they are.
-        val userSwitchedAway = destination != null && currentForeground != null &&
-            currentForeground != destination && currentForeground != context.packageName
+
+        val userSwitchedAway = destination != null
+            && currentForeground != null
+            && currentForeground != destination
+            && currentForeground != context.packageName
+
         if (userSwitchedAway) {
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(
@@ -1185,7 +1172,9 @@ class GenerationHandler(
             }
             return
         }
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
+
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            ?: return
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         try {
             context.startActivity(intent)
@@ -1203,7 +1192,7 @@ class GenerationHandler(
         systemAddendum: String? = null,
         messages: List<UIMessage>,
         onUpdateMessages: suspend (List<UIMessage>) -> Unit,
-        transformers: List<InputMessageTransformer>,
+        transformers: List<MessageTransformer>,
         model: Model,
         providerImpl: Provider<ProviderSetting>,
         provider: ProviderSetting,
@@ -1220,11 +1209,12 @@ class GenerationHandler(
         val internalMessages = buildList {
             // Conversation-level system prompt override (upstream): when the assistant
             // allows it and the conversation supplies one, it replaces the assistant prompt.
-            val effectiveSystemPrompt = if (assistant.allowConversationSystemPrompt && !conversationSystemPrompt.isNullOrBlank()) {
-                conversationSystemPrompt
-            } else {
-                assistant.systemPrompt
-            }
+            val effectiveSystemPrompt =
+                if (assistant.allowConversationSystemPrompt && !conversationSystemPrompt.isNullOrBlank()) {
+                    conversationSystemPrompt
+                } else {
+                    assistant.systemPrompt
+                }
             val memoryPrompt = if (assistant.enableMemory) {
                 buildMemoryPrompt(memories = memories)
             } else ""
@@ -1232,7 +1222,6 @@ class GenerationHandler(
                 buildRecentChatsPrompt(assistant, conversationRepo)
             } else ""
             val toolPrompts = tools.map { tool -> tool.systemPrompt(model, messages) }
-
             // Split into stable (assistant + tools) and volatile (memory + recent chats +
             // addendum) so prompt caching survives memory injection: the stable part is the
             // cached prefix, the volatile part sits after it. See SystemPromptBuilder.
@@ -1243,7 +1232,6 @@ class GenerationHandler(
                 toolPrompts = toolPrompts,
                 systemAddendum = systemAddendum,
             )
-
             val systemParts = buildList {
                 if (stableSystem.isNotBlank()) add(UIMessagePart.Text(stableSystem))
                 if (volatileSystem.isNotBlank()) add(UIMessagePart.Text(volatileSystem))
@@ -1251,7 +1239,6 @@ class GenerationHandler(
             if (systemParts.isNotEmpty()) {
                 add(UIMessage(role = MessageRole.SYSTEM, parts = systemParts, isSynthetic = true))
             }
-
             // Keeps the fork's multi-part system assembly and tool-image ageing, on top of
             // upstream's isSynthetic marker (keeps this built-up system prompt out of
             // TemplateTransformer) and its stepped truncation (which now preserves
@@ -1307,9 +1294,9 @@ class GenerationHandler(
                     params = params
                 ).onCompletion { cause ->
                     // Some SSE implementations report an abruptly closed socket through onClosed
-                    // without an exception. Treat a clean close with no chunks at all as a
-                    // transport failure so the retry policy can recover a background continuation.
-                    // A clean close after chunks arrived but none produced parseable parts is a permanent
+                    // without an exception. Treat a clean close with no chunks at all as a transport
+                    // failure so the retry policy can recover a background continuation. A clean
+                    // close after chunks arrived but none produced parseable parts is a permanent
                     // condition (unrecognized part shapes), not a transport hiccup, so it must not
                     // burn retries - log it and let the generation end normally with an empty reply.
                     if (cause == null && shouldReportEmptyGenerationStream(receivedAnyChunk)) {
@@ -1385,10 +1372,7 @@ class GenerationHandler(
                         params = params,
                     )
                 }
-                messages = messages.handleTextGenerationResult(
-                    result = result,
-                    model = model
-                )
+                messages = messages.handleTextGenerationResult(result = result, model = model)
                 onUpdateMessages(messages)
             }
         } finally {
@@ -1404,14 +1388,18 @@ class GenerationHandler(
         val textParts = output.filterIsInstance<UIMessagePart.Text>()
         val nonTextParts = output.filter { it !is UIMessagePart.Text }
         val totalChars = textParts.sumOf { it.text.length }
+
         if (totalChars <= MAX_TOOL_OUTPUT_CHARS || !hasShellAccess) return output
 
         Log.i(TAG, "maybeTruncateToolOutput: truncating tool $toolCallId output ($totalChars chars)")
+
         val fullText = textParts.joinToString("\n") { it.text }
         val preview = fullText.take(TOOL_OUTPUT_PREVIEW_CHARS)
+
         val fileName = "${toolCallId}.txt"
         val outputDir = File(context.filesDir, FileFolders.TOOL_OUTPUTS).apply { mkdirs() }
         File(outputDir, fileName).writeText(fullText)
+
         return listOf(
             UIMessagePart.Text(
                 buildString {
@@ -1425,4 +1413,5 @@ class GenerationHandler(
             )
         ) + nonTextParts
     }
+
 }

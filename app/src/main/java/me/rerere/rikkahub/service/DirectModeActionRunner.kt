@@ -17,14 +17,15 @@ import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 /**
  * Parses + executes mode='direct' action sequences. Each action is a single
  * `{tool: name, args: { ... }}` object; the array is run in order. Per-action
- * timeout (60s). HARDLINE checked at every action's args BEFORE invoking.
+ * 60-second timeout. HARDLINE checked at every action's args BEFORE invoking.
  *
  * No inter-action templating in v1 — each action is independent. (See spec
- * §"Out of scope for v1" — that's Phase Twelve Workflows territory.)
+ * §"Out of scope for v1" — that's Phase 12 Workflows territory.)
  */
 class DirectModeActionRunner(
     private val json: Json,
 ) {
+
     @Serializable
     data class Action(val tool: String, val args: JsonObject)
 
@@ -34,30 +35,18 @@ class DirectModeActionRunner(
     /** Outcome of running a single action. */
     sealed class StepResult {
         data class Success(val output: List<UIMessagePart>) : StepResult()
-
         data class Failed(val errorMessage: String) : StepResult()
-
         data object TimedOut : StepResult()
-
         data class HardlineBlocked(val reason: String) : StepResult()
-
-        /**
-         * The action's tool is not in the available-tools list at fire time (never
-         * registered, or the assistant disabled it after the job was created).
-         */
-        data class UnknownTool(val toolName: String) : StepResult()
-
-        /**
-         * The stored action matched a compatibility rule whose args could not be
-         * adapted (unparseable legacy args, throwing transform), or the canonical args
-         * could not be re-parsed. The action is NEVER executed in this case.
-         */
         data class ResolutionError(val reason: String) : StepResult()
+        /** The action's tool is not in the available-tools list at fire time (never
+         *  registered, or the assistant disabled it after the job was created). */
+        data class UnknownTool(val toolName: String) : StepResult()
     }
 
     /** Outcome of running the whole sequence. */
     data class SequenceResult(
-        val finalOutcome: String, // success|failed|timed_out
+        val finalOutcome: String,        // success|failed|timed_out
         val errorMessage: String?,
     )
 
@@ -68,18 +57,18 @@ class DirectModeActionRunner(
         for ((idx, action) in actions.withIndex()) {
             val result = runOne(idx, action, availableTools)
             when (result) {
-                is StepResult.Success -> continue
-                is StepResult.Failed -> return SequenceResult("failed", "action $idx: ${result.errorMessage}")
-                is StepResult.TimedOut -> return SequenceResult("timed_out", "action $idx: ${action.tool} exceeded its per-action timeout")
-                is StepResult.HardlineBlocked -> return SequenceResult("failed", "action $idx: hardline:${result.reason}")
+                is StepResult.Success        -> continue
+                is StepResult.Failed         -> return SequenceResult("failed", "action $idx: ${result.errorMessage}")
+                is StepResult.TimedOut       -> return SequenceResult("timed_out", "action $idx: ${action.tool} exceeded 60s")
+                is StepResult.HardlineBlocked-> return SequenceResult("failed", "action $idx: hardline:${result.reason}")
                 is StepResult.ResolutionError -> return SequenceResult("failed", "action $idx: compat_error:${result.reason}")
                 // A direct-mode job validates its tool list at creation time, but the
                 // assistant's enabled-tools set can change afterwards. If a tool the job
-                // references is no longer in the availableTools list when the job fires,
-                // surface it as a NAMED failure (tool_unavailable:<name>) so the failed
+                // references is no longer in `availableTools` when the job fires, surface
+                // it as a NAMED failure ("tool_unavailable: <toolName>") so the failed
                 // run-history row tells the user exactly which tool to re-enable — rather
                 // than the job appearing to fail for an opaque reason.
-                is StepResult.UnknownTool -> return SequenceResult("failed", "action $idx: tool_unavailable: ${result.toolName}")
+                is StepResult.UnknownTool    -> return SequenceResult("failed", "action $idx: tool_unavailable: ${result.toolName}")
             }
         }
         return SequenceResult("success", null)
@@ -90,12 +79,7 @@ class DirectModeActionRunner(
         action: Action,
         availableTools: List<Tool>,
     ): StepResult {
-        // Tool-call compatibility layer: a direct-mode job persists its action list at
-        // creation time, so an action naming a tool that has since been renamed — or
-        // folded into a composite with a different args schema — resolves through the
-        // canonical table here. Resolution happens BEFORE the HARDLINE arm so the safety
-        // floor judges the canonical call the tool will actually receive, and so a
-        // resolution failure can never fall back to executing the legacy args.
+        // Resolve the whole persisted call before policy, lookup and execution.
         val resolved = ToolNameAliases.resolveCall(action.tool, action.args)
         if (resolved.resolutionError != null) {
             Log.w(TAG, "direct-mode compat-resolution failed action $idx tool=${action.tool}: ${resolved.resolutionError}")
@@ -135,7 +119,9 @@ class DirectModeActionRunner(
          * Called as a static companion so tests don't need a Json instance.
          */
         fun parse(actionsJson: String): Result<List<Action>> {
-            val element: JsonElement = runCatching { Json.parseToJsonElement(actionsJson) }.getOrElse {
+            val element: JsonElement = runCatching {
+                Json.parseToJsonElement(actionsJson)
+            }.getOrElse {
                 return Result.failure(ParseError("invalid_json", it.message ?: "JSON parse failed"))
             }
             if (element !is JsonArray) {

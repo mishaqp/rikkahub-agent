@@ -23,8 +23,8 @@ import org.junit.Test
  *
  * Two groups:
  *
- * 1. Contract against the shipped table: the six migrated device-info names resolve
- * to device_info(section=...), while every unrelated name remains a strict byte-level no-op.
+ * 1. Contract against the shipped table: device-info and device-control legacy names
+ * resolve to their composite schemas, while unrelated names remain strict byte-level no-op.
  * 2. Synthetic rules: the exact behaviour a future merge PR will rely on — one-hop
  * name+args resolution, transform failure meaning the call is refused, one shared
  * canonical loop signature, HARDLINE judging transformed args, canonical lookup and
@@ -57,8 +57,8 @@ class ToolNameAliasesTest {
  // ---- 1. Shipped table: strict no-op ---------------------------------------
 
  @Test
- fun `production rules contain exactly the six device info migrations`() {
- val expected = mapOf(
+ fun `production rules contain device info and device control migrations`() {
+ val deviceInfo = mapOf(
  "get_battery_status" to "battery",
  "get_audio_info" to "audio",
  "get_telephony_info" to "telephony",
@@ -66,9 +66,17 @@ class ToolNameAliasesTest {
  "get_storage_info" to "storage",
  "list_sensors" to "sensors",
  )
- assertEquals(expected.keys, ToolNameAliases.RULES.keys)
+ val deviceControlInputs = mapOf(
+ "set_torch" to "{\"on\":true}",
+ "vibrate" to "{\"duration_ms\":250}",
+ "get_brightness" to "{}",
+ "set_brightness" to "{\"value\":160}",
+ "get_volume" to "{\"stream\":\"media\"}",
+ "set_volume" to "{\"stream\":\"media\",\"percent\":50}",
+ )
+ assertEquals(deviceInfo.keys + deviceControlInputs.keys, ToolNameAliases.RULES.keys)
  assertTrue(ToolNameAliases.validate(ToolNameAliases.RULES).isEmpty())
- expected.forEach { (legacy, section) ->
+ deviceInfo.forEach { (legacy, section) ->
  val resolved = ToolNameAliases.resolveCall(legacy, "{}")
  assertEquals("device_info", resolved.canonicalName)
  assertEquals(section, Json.parseToJsonElement(resolved.canonicalInput).jsonObject["section"]?.jsonPrimitive?.content)
@@ -76,6 +84,30 @@ class ToolNameAliasesTest {
  assertNull(resolved.resolutionError)
  assertTrue(resolved.aliased)
  }
+ deviceControlInputs.forEach { (legacy, input) ->
+ val resolved = ToolNameAliases.resolveCall(legacy, input)
+ assertEquals("device_control", resolved.canonicalName)
+ val canonical = Json.parseToJsonElement(resolved.canonicalInput).jsonObject
+ assertEquals(legacy, canonical["action"]?.jsonPrimitive?.content)
+ Json.parseToJsonElement(input).jsonObject.forEach { (key, value) ->
+ assertEquals(value, canonical[key])
+ }
+ assertEquals(legacy, resolved.approvalName)
+ assertNull(resolved.resolutionError)
+ assertTrue(resolved.aliased)
+ }
+ }
+
+ @Test
+ fun `legacy device control action cannot override its fixed canonical action`() {
+ val resolved = ToolNameAliases.resolveCall(
+ "set_torch",
+ "{\"action\":\"set_volume\",\"on\":true}",
+ )
+ val canonical = Json.parseToJsonElement(resolved.canonicalInput).jsonObject
+ assertEquals("device_control", resolved.canonicalName)
+ assertEquals("set_torch", canonical["action"]?.jsonPrimitive?.content)
+ assertEquals(true, canonical["on"]?.jsonPrimitive?.content?.toBoolean())
  }
 
  @Test
@@ -233,9 +265,10 @@ class ToolNameAliasesTest {
 
  @Test
  fun `lookup finds the canonical tool`() {
- val tools = listOf(tool("files"), tool("web"), tool("device_info"))
+ val tools = listOf(tool("files"), tool("web"), tool("device_info"), tool("device_control"))
  // Production device-info aliases resolve to the real composite tool.
  assertEquals("device_info", ToolNameAliases.resolveTool(tools, "get_battery_status")?.name)
+ assertEquals("device_control", ToolNameAliases.resolveTool(tools, "set_torch")?.name)
  // Unmigrated names are still untouched.
  assertNull(ToolNameAliases.resolveTool(tools, "list_files"))
  assertEquals("files", ToolNameAliases.resolveTool(tools, "files")?.name)

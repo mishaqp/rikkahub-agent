@@ -94,6 +94,40 @@ class LoopGuardTest {
         assertTrue(decision.block)
     }
 
+
+    @Test
+    fun compositePolicy_keepsDeviceInfoFreshnessIdentity() {
+        assertEquals(
+            "get_battery_status",
+            loopGuardPolicyToolName("device_info", "{\"section\":\"battery\"}"),
+        )
+        assertEquals(
+            "get_storage_info",
+            loopGuardPolicyToolName("device_info", "{\"section\":\"storage\"}"),
+        )
+        // Sensors never had a freshness bucket before the composite migration.
+        assertEquals(
+            "device_info",
+            loopGuardPolicyToolName("device_info", "{\"section\":\"sensors\"}"),
+        )
+    }
+
+    @Test
+    fun compositePolicy_onlyTreatsDeviceControlReadsAsObservers() {
+        assertEquals(
+            "get_brightness",
+            loopGuardPolicyToolName("device_control", "{\"action\":\"get_brightness\"}"),
+        )
+        assertEquals(
+            "get_volume",
+            loopGuardPolicyToolName("device_control", "{\"action\":\"get_volume\",\"stream\":\"media\"}"),
+        )
+        assertEquals(
+            "device_control",
+            loopGuardPolicyToolName("device_control", "{\"action\":\"set_volume\",\"stream\":\"media\",\"percent\":50}"),
+        )
+    }
+
     @Test
     fun freshnessTtlBypass_letsStaleRealtimeReadThrough() {
         // Three identical battery reads, but the most recent is older than the 30s TTL, so the

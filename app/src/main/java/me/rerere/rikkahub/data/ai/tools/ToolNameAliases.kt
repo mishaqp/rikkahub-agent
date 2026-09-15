@@ -62,8 +62,8 @@ import me.rerere.ai.core.Tool
  *
  * ## Current state of the table
  *
- * [RULES] now contains the first production composite migration: the six legacy
- * read-only device-info names map to device_info(section=...). Other names remain strict no-op.
+ * [RULES] contains the production composite migrations for device_info and device_control.
+ * Unrelated names remain strict no-op.
  */
 object ToolNameAliases {
 
@@ -103,6 +103,16 @@ object ToolNameAliases {
  buildJsonObject { put("section", section) }
  }
 
+ private fun deviceControlAction(action: String): ArgsTransform = ArgsTransform { legacyArgs ->
+ require(legacyArgs is JsonObject) { "legacy device-control args must be a JSON object" }
+ buildJsonObject {
+ put("action", action)
+ legacyArgs.forEach { (key, value) ->
+ if (key != "action") put(key, value)
+ }
+ }
+ }
+
  /**
  * Production rule table: legacyName -> rule.
  * Invariants (enforced by [validate]): no blank names, no self-alias, no chains,
@@ -115,6 +125,12 @@ object ToolNameAliases {
  "get_wifi_info" to CompatibilityRule("device_info", deviceInfoSection("wifi")),
  "get_storage_info" to CompatibilityRule("device_info", deviceInfoSection("storage")),
  "list_sensors" to CompatibilityRule("device_info", deviceInfoSection("sensors")),
+ "set_torch" to CompatibilityRule("device_control", deviceControlAction("set_torch"), approvalName = "set_torch"),
+ "vibrate" to CompatibilityRule("device_control", deviceControlAction("vibrate"), approvalName = "vibrate"),
+ "get_brightness" to CompatibilityRule("device_control", deviceControlAction("get_brightness"), approvalName = "get_brightness"),
+ "set_brightness" to CompatibilityRule("device_control", deviceControlAction("set_brightness"), approvalName = "set_brightness"),
+ "get_volume" to CompatibilityRule("device_control", deviceControlAction("get_volume"), approvalName = "get_volume"),
+ "set_volume" to CompatibilityRule("device_control", deviceControlAction("set_volume"), approvalName = "set_volume"),
  )
 
  /**

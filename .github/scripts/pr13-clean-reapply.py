@@ -8,6 +8,13 @@ def replace_exact(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_first(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count < 1:
+        raise SystemExit(f"{label}: expected at least 1 match, got {count}")
+    return text.replace(old, new, 1)
+
+
 # ---------------------------------------------------------------------------
 # GenerationHandler: start from the clean name-only PR13 version, then upgrade
 # policy/execution to resolve the whole call (name + args).
@@ -282,7 +289,7 @@ s = replace_exact(
 ''',
     "WorkflowJson call-level validation",
 )
-s = replace_exact(
+s = replace_first(
     s,
     '''            val args = ao["args"] as? JsonObject ?: buildJsonObject { }
             val timeout = ao["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60

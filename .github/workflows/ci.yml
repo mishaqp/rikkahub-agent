@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  schedule:
+    - cron: '17 2 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -15,8 +17,91 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      browser: ${{ steps.filter.outputs.browser }}
+      room: ${{ steps.filter.outputs.room }}
+      llama: ${{ steps.filter.outputs.llama }}
+      litert: ${{ steps.filter.outputs.litert }}
+      full_suite: ${{ steps.filter.outputs.full_suite }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Detect changed areas
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          CHANGED=/tmp/changed-files.txt
+          : > "$CHANGED"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "schedule" ]]; then
+            FULL_SUITE=true
+            echo "Full suite requested by $EVENT_NAME"
+          else
+            FULL_SUITE=false
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              DIFF_BASE="$BASE_SHA"
+            else
+              DIFF_BASE="$BEFORE_SHA"
+            fi
+
+            if [[ -z "${DIFF_BASE:-}" || "$DIFF_BASE" =~ ^0+$ ]]; then
+              DIFF_BASE="$(git rev-parse "${HEAD_SHA}^")"
+            fi
+
+            git diff --name-only "$DIFF_BASE" "$HEAD_SHA" | tee "$CHANGED"
+          fi
+
+          matches() {
+            local pattern="$1"
+            [[ -s "$CHANGED" ]] && grep -Eq "$pattern" "$CHANGED"
+          }
+
+          # Build-system / CI changes can affect every specialist surface, so validate all of them.
+          GLOBAL_PATTERN='^(\.github/workflows/ci\.yml|build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|gradle/|app/build\.gradle\.kts|.*CMakeLists\.txt$|.*\.toml$)'
+          BROWSER_PATTERN='^(app/src/(main|androidTest)/.*(browser|Browser|webview|WebView)|web-ui/|search/src/.*(web|Web|html|Html|readability|Readability))'
+          ROOM_PATTERN='^(app/src/(main|androidTest)/java/me/rerere/rikkahub/data/(db|repository)/|app/schemas/|app/src/.*(Migration|migration|Room|room))'
+          LLAMA_PATTERN='^(llama-cpp/|app/src/.*(llama|Llama)|.*(llama|Llama|ggml|GGML).*)'
+          LITERT_PATTERN='^(local-llm/|app/src/.*(litert|LiteRT|local.?llm|Local.?Llm)|.*(litert|LiteRT).*)'
+
+          GLOBAL=false
+          if [[ "$FULL_SUITE" == "true" ]] || matches "$GLOBAL_PATTERN"; then
+            GLOBAL=true
+          fi
+
+          emit_flag() {
+            local name="$1"
+            local pattern="$2"
+            local value=false
+            if [[ "$FULL_SUITE" == "true" || "$GLOBAL" == "true" ]] || matches "$pattern"; then
+              value=true
+            fi
+            echo "$name=$value" >> "$GITHUB_OUTPUT"
+            echo "$name=$value" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          echo "full_suite=$FULL_SUITE" >> "$GITHUB_OUTPUT"
+          echo "full_suite=$FULL_SUITE" >> "$GITHUB_STEP_SUMMARY"
+          emit_flag browser "$BROWSER_PATTERN"
+          emit_flag room "$ROOM_PATTERN"
+          emit_flag llama "$LLAMA_PATTERN"
+          emit_flag litert "$LITERT_PATTERN"
+
   unit-tests:
-    name: Unit tests + web typecheck
+    name: Core unit tests + web typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -51,13 +136,11 @@ jobs:
           CODE="$(bash .github/scripts/version-code.sh)"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_STEP_SUMMARY"
-      - name: Run AI, search, LiteRT, llama.cpp, workspace and app unit tests
+      - name: Run core unit tests
         run: >-
           ./gradlew
           :ai:testDebugUnitTest
           :search:testDebugUnitTest
-          :local-llm:testDebugUnitTest
-          :llama-cpp:testDebugUnitTest
           :workspace:testDebugUnitTest
           :app:testDebugUnitTest
           --no-daemon
@@ -66,6 +149,62 @@ jobs:
       - name: Web UI typecheck
         working-directory: web-ui
         run: pnpm typecheck
+
+  litert-unit-tests:
+    name: LiteRT unit tests
+    needs: changes
+    if: needs.changes.outputs.litert == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Run LiteRT unit tests
+        run: >-
+          ./gradlew
+          :local-llm:testDebugUnitTest
+          --no-daemon
+          --max-workers=2
+          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
+
+  llama-unit-tests:
+    name: llama.cpp unit tests
+    needs: changes
+    if: needs.changes.outputs.llama == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Run llama.cpp unit tests
+        run: >-
+          ./gradlew
+          :llama-cpp:testDebugUnitTest
+          --no-daemon
+          --max-workers=2
+          -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8"
 
   build-release:
     name: Lint, build and verify arm64-v8a APK
@@ -201,10 +340,11 @@ jobs:
           if-no-files-found: error
 
   # Compiles and loads the real JNI library on Android without downloading a multi-GB model.
-  # Model-independent JVM tests cover context planning, templates, streaming, cancellation and
-  # memory refusal; this job proves the NDK/CMake artifact itself links and executes on-device.
+  # It runs only for llama/native/build-system changes, plus nightly/manual full-suite runs.
   llama-native-tests:
     name: llama.cpp JNI smoke test (emulator)
+    needs: changes
+    if: needs.changes.outputs.llama == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -249,6 +389,8 @@ jobs:
 
   room-migration-tests:
     name: Room migration tests (emulator)
+    needs: changes
+    if: needs.changes.outputs.room == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -305,13 +447,12 @@ jobs:
           path: app/build/reports/androidTests/**
           if-no-files-found: ignore
 
-  # Stage 3 (Web Research v1) reads the *live* WebView: `innerText` needs a real render tree and
-  # Readability.js is injected into a real DOM. Neither can be faked on the JVM, so the browser half
-  # of the research engine is covered by an instrumentation test on an emulator that ships a current
-  # WebView provider (google_apis, API 34 — a bare AOSP / old-API image carries a WebView too old for
-  # the pinned Readability.js).
+  # Reads the live WebView. It runs only for browser/WebView/search/build-system changes,
+  # plus nightly/manual full-suite runs.
   browser-webview-tests:
     name: Browser WebView instrumentation tests (emulator)
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

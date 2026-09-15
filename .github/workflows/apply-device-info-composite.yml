@@ -1,0 +1,203 @@
+name: Apply device_info composite patch
+
+on:
+  push:
+    branches: [refactor/device-info-composite]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/device-info-composite
+          fetch-depth: 0
+      - name: Apply focused patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 match, got {count}")
+              return text.replace(old, new, 1)
+
+          local_path = Path('app/src/main/java/me/rerere/rikkahub/data/ai/tools/LocalTools.kt')
+          text = local_path.read_text()
+          for line in [
+              'import me.rerere.rikkahub.data.ai.tools.local.audioInfoTool\n',
+              'import me.rerere.rikkahub.data.ai.tools.local.batteryTool\n',
+              'import me.rerere.rikkahub.data.ai.tools.local.listSensorsTool\n',
+              'import me.rerere.rikkahub.data.ai.tools.local.storageTool\n',
+              'import me.rerere.rikkahub.data.ai.tools.local.telephonyInfoTool\n',
+              'import me.rerere.rikkahub.data.ai.tools.local.wifiInfoTool\n',
+          ]:
+              if text.count(line) != 1:
+                  raise SystemExit(f'LocalTools import missing/duplicate: {line.strip()}')
+              text = text.replace(line, '', 1)
+          anchor = 'import me.rerere.rikkahub.data.ai.tools.local.deleteFileTool\n'
+          text = replace_once(text, anchor, anchor + 'import me.rerere.rikkahub.data.ai.tools.local.deviceInfoTool\n', 'deviceInfoTool import')
+          text = replace_once(
+              text,
+              'private val TOP_TOOL_EXAMPLES: Map<String, String> = mapOf(\n    "get_battery_status" to "get_battery_status()",',
+              'private val TOP_TOOL_EXAMPLES: Map<String, String> = mapOf(\n    "device_info" to "device_info(section=\\"battery\\")",\n    "get_battery_status" to "get_battery_status()",',
+              'device_info example',
+          )
+          old_registration = '''        if (options.contains(LocalToolOption.Battery)) {
+            tools.add(batteryTool(context))
+        }
+        if (options.contains(LocalToolOption.AudioInfo)) {
+            tools.add(audioInfoTool(context))
+        }
+        if (options.contains(LocalToolOption.TelephonyInfo)) {
+            tools.add(telephonyInfoTool(context))
+        }
+        if (options.contains(LocalToolOption.WifiInfo)) {
+            tools.add(wifiInfoTool(context))
+        }
+        if (options.contains(LocalToolOption.Sensors)) {
+            tools.add(listSensorsTool(context))
+            tools.add(readSensorTool(context))
+        }
+        if (options.contains(LocalToolOption.StorageInfo)) {
+            tools.add(storageTool(context))
+        }
+'''
+          new_registration = '''        val deviceInfoSections = buildSet {
+            if (options.contains(LocalToolOption.Battery)) add("battery")
+            if (options.contains(LocalToolOption.AudioInfo)) add("audio")
+            if (options.contains(LocalToolOption.TelephonyInfo)) add("telephony")
+            if (options.contains(LocalToolOption.WifiInfo)) add("wifi")
+            if (options.contains(LocalToolOption.StorageInfo)) add("storage")
+            if (options.contains(LocalToolOption.Sensors)) add("sensors")
+        }
+        if (deviceInfoSections.isNotEmpty()) {
+            tools.add(deviceInfoTool(context, deviceInfoSections))
+        }
+        // Sensor streaming keeps its own schema; only the read-only sensor catalogue is folded
+        // into device_info(section="sensors").
+        if (options.contains(LocalToolOption.Sensors)) {
+            tools.add(readSensorTool(context))
+        }
+'''
+          text = replace_once(text, old_registration, new_registration, 'device info registration')
+          local_path.write_text(text)
+
+          alias_path = Path('app/src/main/java/me/rerere/rikkahub/data/ai/tools/ToolNameAliases.kt')
+          text = alias_path.read_text()
+          text = replace_once(
+              text,
+              'import kotlinx.serialization.json.JsonElement\n',
+              'import kotlinx.serialization.json.JsonElement\nimport kotlinx.serialization.json.JsonObject\nimport kotlinx.serialization.json.buildJsonObject\nimport kotlinx.serialization.json.put\n',
+              'alias imports',
+          )
+          text = text.replace(
+              ' * - Strict no-op without a rule. Unknown names (i.e. every name the app ships today,\n * because [RULES] is empty) are returned untouched: the requested input string is\n',
+              ' * - Strict no-op without a rule. Unknown/current canonical names are returned untouched:\n * the requested input string is\n',
+          )
+          text = text.replace(
+              ' * [RULES] is intentionally EMPTY: this PR ships pure infrastructure. The first entry\n * lands only as the last step of a merge PR, once its canonical tool is registered.\n',
+              ' * [RULES] now contains the first production composite migration: the six legacy\n * read-only device-info names map to device_info(section=...). Other names remain strict no-op.\n',
+          )
+          old_rules = ''' /**
+ * Production rule table: legacyName -> rule. EMPTY in this PR.
+ * Invariants (enforced by [validate]): no blank names, no self-alias, no chains,
+ * no mcp-prefixed keys or targets.
+ */
+ val RULES: Map<String, CompatibilityRule> = emptyMap()
+'''
+          new_rules = ''' private fun deviceInfoSection(section: String): ArgsTransform = ArgsTransform { legacyArgs ->
+ require(legacyArgs is JsonObject) { "legacy device-info args must be a JSON object" }
+ buildJsonObject { put("section", section) }
+ }
+
+ /**
+ * Production rule table: legacyName -> rule.
+ * Invariants (enforced by [validate]): no blank names, no self-alias, no chains,
+ * no mcp-prefixed keys or targets.
+ */
+ val RULES: Map<String, CompatibilityRule> = mapOf(
+ "get_battery_status" to CompatibilityRule("device_info", deviceInfoSection("battery")),
+ "get_audio_info" to CompatibilityRule("device_info", deviceInfoSection("audio")),
+ "get_telephony_info" to CompatibilityRule("device_info", deviceInfoSection("telephony")),
+ "get_wifi_info" to CompatibilityRule("device_info", deviceInfoSection("wifi")),
+ "get_storage_info" to CompatibilityRule("device_info", deviceInfoSection("storage")),
+ "list_sensors" to CompatibilityRule("device_info", deviceInfoSection("sensors")),
+ )
+'''
+          text = replace_once(text, old_rules, new_rules, 'production device_info rules')
+          alias_path.write_text(text)
+
+          test_path = Path('app/src/test/java/me/rerere/rikkahub/data/ai/tools/ToolNameAliasesTest.kt')
+          text = test_path.read_text()
+          text = text.replace('1. Contract against the shipped (EMPTY) table: a strict byte-level no-op for every\n * call the app can emit today, so shipping this layer cannot change behaviour.\n * 2. Synthetic rules:', '1. Contract against the shipped table: the six migrated device-info names resolve\n * to device_info(section=...), while every unrelated name remains a strict byte-level no-op.\n * 2. Synthetic rules:')
+          old_prod = ''' @Test
+ fun `production rules table is empty`() {
+ assertTrue(
+ "ToolNameAliases.RULES must ship empty — this PR is infrastructure only",
+ ToolNameAliases.RULES.isEmpty(),
+ )
+ }
+'''
+          new_prod = ''' @Test
+ fun `production rules contain exactly the six device info migrations`() {
+ val expected = mapOf(
+ "get_battery_status" to "battery",
+ "get_audio_info" to "audio",
+ "get_telephony_info" to "telephony",
+ "get_wifi_info" to "wifi",
+ "get_storage_info" to "storage",
+ "list_sensors" to "sensors",
+ )
+ assertEquals(expected.keys, ToolNameAliases.RULES.keys)
+ assertTrue(ToolNameAliases.validate(ToolNameAliases.RULES).isEmpty())
+ expected.forEach { (legacy, section) ->
+ val resolved = ToolNameAliases.resolveCall(legacy, "{}")
+ assertEquals("device_info", resolved.canonicalName)
+ assertEquals(section, Json.parseToJsonElement(resolved.canonicalInput).jsonObject["section"]?.toString()?.trim('"'))
+ assertEquals("device_info", resolved.approvalName)
+ assertNull(resolved.resolutionError)
+ assertTrue(resolved.aliased)
+ }
+ }
+'''
+          text = replace_once(text, old_prod, new_prod, 'production rules test')
+          text = replace_once(
+              text,
+              ' "get_battery_status" to "{}",\n "list_files" to "{\\"path\\":\\"/sdcard\\"}",',
+              ' "get_time_info" to "{}",\n "list_files" to "{\\"path\\":\\"/sdcard\\"}",',
+              'strict noop sample',
+          )
+          old_lookup = ''' val tools = listOf(tool("files"), tool("web"))
+ // Production table (empty): no rewrite today.
+ assertNull(ToolNameAliases.resolveTool(tools, "list_files"))
+ assertEquals("files", ToolNameAliases.resolveTool(tools, "files")?.name)
+ // Synthetic: resolve, then find by canonical name (the runner pattern).
+'''
+          new_lookup = ''' val tools = listOf(tool("files"), tool("web"), tool("device_info"))
+ // Production device-info aliases resolve to the real composite tool.
+ assertEquals("device_info", ToolNameAliases.resolveTool(tools, "get_battery_status")?.name)
+ // Unmigrated names are still untouched.
+ assertNull(ToolNameAliases.resolveTool(tools, "list_files"))
+ assertEquals("files", ToolNameAliases.resolveTool(tools, "files")?.name)
+ // Synthetic: resolve, then find by canonical name (the runner pattern).
+'''
+          text = replace_once(text, old_lookup, new_lookup, 'lookup test')
+          test_path.write_text(text)
+          PY
+      - name: Remove one-shot workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/apply-device-info-composite.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'refactor(tools): fold device info reads into composite tool'
+          git push origin HEAD:refactor/device-info-composite

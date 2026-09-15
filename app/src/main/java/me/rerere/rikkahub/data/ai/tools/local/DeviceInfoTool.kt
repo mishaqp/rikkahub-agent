@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.ai.tools.local
 
 import android.content.Context
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -67,7 +68,7 @@ internal fun deviceInfoTool(
                         put("type", "string")
                         put("description", "Device information section to read")
                         put("enum", buildJsonArray {
-                            allowedSections.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                            allowedSections.forEach { add(JsonPrimitive(it)) }
                         })
                     })
                 },
@@ -82,7 +83,7 @@ internal fun deviceInfoTool(
                         buildJsonObject {
                             put("error", "missing_section")
                             put("available_sections", buildJsonArray {
-                                allowedSections.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                                allowedSections.forEach { add(JsonPrimitive(it)) }
                             })
                         }.toString()
                     )
@@ -94,7 +95,7 @@ internal fun deviceInfoTool(
                             put("error", "section_disabled")
                             put("section", section)
                             put("available_sections", buildJsonArray {
-                                allowedSections.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+                                allowedSections.forEach { add(JsonPrimitive(it)) }
                             })
                         }.toString()
                     )
@@ -102,7 +103,8 @@ internal fun deviceInfoTool(
 
                 else -> {
                     val delegate = delegates[section]
-                        ?: return@Tool listOf(
+                    if (delegate == null) {
+                        listOf(
                             UIMessagePart.Text(
                                 buildJsonObject {
                                     put("error", "section_unavailable")
@@ -110,9 +112,11 @@ internal fun deviceInfoTool(
                                 }.toString()
                             )
                         )
-                    // Every merged legacy info tool has an empty input schema. Delegate rather
-                    // than reimplementing Android queries so output stays byte-for-byte compatible.
-                    delegate.execute(JsonObject(emptyMap()))
+                    } else {
+                        // Every merged legacy info tool has an empty input schema. Delegate rather
+                        // than reimplementing Android queries so output stays byte-for-byte compatible.
+                        delegate.execute(JsonObject(emptyMap()))
+                    }
                 }
             }
         },

@@ -28,16 +28,16 @@ import java.time.ZoneId
  * Phase 12 — workflow execution engine. The single entry point for any workflow fire.
  *
  * Lifecycle of a fire (matches `headless = true` semantics from cron jobs):
- *  1. Lookup workflow + verify enabled.
- *  2. Cooldown check — `lastRunAtMs + cooldownSeconds` against now.
- *  3. Daily-cap check — counted fires (SUCCESS+FAILED) for today's local date.
- *  4. Build [WorkflowContext] — lazy on location for sunset/sunrise conditions.
- *  5. Evaluate conditions; AND-combined.
- *  6. Resolve assistant + tool list. Workflows are app-global, but actions still need a
- *     tool surface to execute against — we use the first assistant with the Workflows
- *     toggle on (the toggle gates *authoring*; runtime fallback is reasonable).
- *  7. Execute action sequence via [DirectModeActionRunner] — every action HARDLINE-checked.
- *  8. Persist run row, projected last-run state, daily counter, trim history.
+ * 1. Lookup workflow + verify enabled.
+ * 2. Cooldown check — `lastRunAtMs + cooldownSeconds` against now.
+ * 3. Daily-cap check — counted fires (SUCCESS+FAILED) for today's local date.
+ * 4. Build [WorkflowContext] — lazy on location for sunset/sunrise conditions.
+ * 5. Evaluate conditions; AND-combined.
+ * 6. Resolve assistant + tool list. Workflows are app-global, but actions still need a
+ * tool surface to execute against — we use the first assistant with the Workflows
+ * toggle on (the toggle gates *authoring*; runtime fallback is reasonable).
+ * 7. Execute action sequence via [DirectModeActionRunner] — every action HARDLINE-checked.
+ * 8. Persist run row, projected last-run state, daily counter, trim history.
  *
  * Concurrency: per-workflow mutex so two near-simultaneous fires (e.g. WiFi flicker) can't
  * race on the daily counter. Cross-workflow execution stays parallel.
@@ -59,17 +59,16 @@ class WorkflowEngine(
     private val contextProvider: ContextProvider,
     private val actionRunner: WorkflowActionRunner,
 ) {
-
     /**
      * [LocalTools] is resolved lazily via Koin to break the construction cycle:
-     *   - [LocalTools] constructor takes a [WorkflowEngine] (so workflow_run can fire)
-     *   - [WorkflowEngine] needs [LocalTools] only at fire time (to build the action's tool surface)
+     * - [LocalTools] constructor takes a [WorkflowEngine] (so workflow_run can fire)
+     * - [WorkflowEngine] needs [LocalTools] only at fire time (to build the action's tool surface)
      * Eager constructor injection would loop the DI graph at startup — observed as a
      * StackOverflowError on first install of Phase 12. Lazy lookup is safe because the
      * graph is fully resolved by the time `fire()` is called.
      */
     private val localTools: LocalTools by lazy {
-        org.koin.java.KoinJavaComponent.getKoin().get<LocalTools>()
+        org.koin.java.KoinJavaComponent.getKoin().get()
     }
 
     /**
@@ -80,7 +79,7 @@ class WorkflowEngine(
      * AgentRunRepository depends only on its DAO.
      */
     private val agentRunRepo: me.rerere.rikkahub.data.agentrun.AgentRunRepository by lazy {
-        org.koin.java.KoinJavaComponent.getKoin().get<me.rerere.rikkahub.data.agentrun.AgentRunRepository>()
+        org.koin.java.KoinJavaComponent.getKoin().get()
     }
 
     private val perWorkflowLocks = mutableMapOf<String, Mutex>()
@@ -119,6 +118,7 @@ class WorkflowEngine(
     private suspend fun fireLocked(workflowId: String): FireOutcome {
         val firedAtMs = System.currentTimeMillis()
         val started = System.nanoTime()
+
         val loaded = repository.getById(workflowId)
             ?: return FireOutcome(WorkflowRunStatus.FAILED, "workflow_not_found", "")
         val def = loaded.definition
@@ -144,9 +144,9 @@ class WorkflowEngine(
         // Trigger runtime pre-flight — surface "this trigger needs setup" as an explicit
         // FAILED row in history so the user sees WHY the workflow doesn't fire instead of
         // just "Never run". The audit found these were silently dying:
-        //  - geofence triggers without ACCESS_FINE_LOCATION + ACCESS_BACKGROUND_LOCATION
-        //  - notification_received without notification listener bound
-        //  - app_launched / app_closed without accessibility service running
+        // - geofence triggers without ACCESS_FINE_LOCATION + ACCESS_BACKGROUND_LOCATION
+        // - notification_received without notification listener bound
+        // - app_launched / app_closed without accessibility service running
         triggerRuntimeCheck(def.trigger)?.let { reason ->
             return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, reason, "", ledgerId)
         }
@@ -205,9 +205,9 @@ class WorkflowEngine(
             }
         }
         if (authoringAssistant == null) {
-            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                "no_workflows_assistant", "", ledgerId)
+            return persistAndReturn(workflowId, firedAtMs, started, WorkflowRunStatus.FAILED, "no_workflows_assistant", "", ledgerId)
         }
+
         // Headless context — sub-agent recursion guard fires from workflow-action
         // dispatch so a workflow's actions can't spawn a sub-agent that re-fires another
         // workflow_run that re-spawns ad infinitum.
@@ -215,7 +215,7 @@ class WorkflowEngine(
             authoringAssistant.localTools,
             me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
                 callerAssistantId = authoringAssistant.id.toString(),
-                callerConversationId = null,  // headless workflow fire — no conv
+                callerConversationId = null, // headless workflow fire — no conv
                 isHeadless = true,
             ),
         )
@@ -273,8 +273,7 @@ class WorkflowEngine(
                     val granted = androidx.core.content.ContextCompat.checkSelfPermission(
                         ctx, android.Manifest.permission.BLUETOOTH_CONNECT
                     ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                    if (!granted) "bluetooth_connect_not_granted: BLUETOOTH_CONNECT runtime permission not granted — required on Android 12+ to read paired-device addresses"
-                    else null
+                    if (!granted) "bluetooth_connect_not_granted: BLUETOOTH_CONNECT runtime permission not granted — required on Android 12+ to read paired-device addresses" else null
                 } else null
             }
             else -> null
@@ -317,7 +316,9 @@ class WorkflowEngine(
         return FireOutcome(status, error, summary)
     }
 
-    companion object { private const val TAG = "WorkflowEngine" }
+    companion object {
+        private const val TAG = "WorkflowEngine"
+    }
 
     data class FireOutcome(
         val status: WorkflowRunStatus,
@@ -346,31 +347,42 @@ internal object CooldownGate {
  * different action shape. Same HARDLINE-then-execute semantics.
  *
  * Per-action timeout is the action's [WorkflowAction.timeoutSeconds] field; default 60s.
+ *
+ * Every action is resolved through
+ * [me.rerere.rikkahub.data.ai.tools.ToolNameAliases.resolveCall] first: a stored definition
+ * keeps the tool name and args it was authored with, and a future tool merge maps that
+ * legacy call onto the canonical tool plus its adapted args. HARDLINE, the tool lookup and
+ * execute() therefore all see the canonical call, and a rule that cannot be applied safely
+ * fails the fire instead of silently running the legacy args.
  */
 class WorkflowActionRunner {
-
     data class RunResult(val success: Boolean, val error: String?, val summary: String)
 
     suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
         val outputs = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
-            val argsJson = action.args.toString()
-            // Tool-name compatibility layer: a stored workflow definition keeps the tool name it
-            // was authored with. Resolve it to the canonical current name before the HARDLINE arm
-            // and before the lookup, so a merged/renamed tool stays fireable and the alias cannot
-            // stand in for a name the safety floor would otherwise have matched.
-            val canonicalToolName = ToolNameAliases.canonicalName(action.tool)
-            val hardlineReason = HardlineCommandGuard.checkTool(canonicalToolName, argsJson)
+            // Tool-call compatibility layer: resolve the whole stored call (name + args)
+            // BEFORE the HARDLINE arm and the lookup, so a merged/renamed tool stays
+            // fireable and the safety floor judges the canonical call the tool will
+            // actually receive. A resolution failure aborts the fire — never a silent
+            // fallback to the legacy args.
+            val resolved = ToolNameAliases.resolveCall(action.tool, action.args)
+            if (resolved.resolutionError != null) {
+                logSafe("workflow compat-resolution failed action $idx tool=${action.tool}: ${resolved.resolutionError}")
+                return RunResult(false, "action $idx: compat_error:${resolved.resolutionError}", outputs.joinToString("\n"))
+            }
+            val hardlineReason = HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
-                return RunResult(success = false,
-                    error = "action $idx: hardline:$hardlineReason",
-                    summary = outputs.joinToString("\n"))
+                return RunResult(success = false, error = "action $idx: hardline:$hardlineReason", summary = outputs.joinToString("\n"))
             }
-            val tool = ToolNameAliases.resolveTool(availableTools, action.tool)
+            val tool = availableTools.firstOrNull { it.name == resolved.canonicalName }
                 ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
+            val canonicalArgs = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(resolved.canonicalInput) }.getOrElse {
+                return RunResult(false, "action $idx: compat_error:canonical args unparseable", outputs.joinToString("\n"))
+            }
             val out = try {
-                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }
+                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(canonicalArgs) }
             } catch (c: kotlinx.coroutines.CancellationException) {
                 // Don't swallow cancellation — re-throw so structured concurrency can
                 // unwind the fire (e.g. the engine scope is cancelled on shutdown). The
@@ -378,14 +390,10 @@ class WorkflowActionRunner {
                 throw c
             } catch (t: Throwable) {
                 logSafe("workflow action $idx tool=${action.tool} threw: ${t.message}")
-                return RunResult(false,
-                    "action $idx: ${t::class.simpleName}: ${t.message.orEmpty()}".take(500),
-                    outputs.joinToString("\n"))
+                return RunResult(false, "action $idx: ${t::class.simpleName}: ${t.message.orEmpty()}".take(500), outputs.joinToString("\n"))
             }
             if (out == null) {
-                return RunResult(false,
-                    "action $idx: ${action.tool} exceeded ${action.timeoutSeconds}s",
-                    outputs.joinToString("\n"))
+                return RunResult(false, "action $idx: ${action.tool} exceeded ${action.timeoutSeconds}s", outputs.joinToString("\n"))
             }
             // Surface the first ~200 chars of the tool's text output for the run history.
             val text = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
@@ -403,5 +411,7 @@ class WorkflowActionRunner {
         runCatching { Log.w(TAG, msg) }
     }
 
-    companion object { private const val TAG = "WorkflowActionRunner" }
+    companion object {
+        private const val TAG = "WorkflowActionRunner"
+    }
 }

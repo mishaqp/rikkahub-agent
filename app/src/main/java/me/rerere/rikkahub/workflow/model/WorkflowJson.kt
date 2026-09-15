@@ -25,7 +25,7 @@ import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
  *   "actions": [ { "tool": "...", "args": { ... } } ] }
  * ```
  *
- * kotlinx polymorphic-sealed default is `{ "type": "...", <inline-fields> }`. We bridge by
+ * kotlinx polymorphic-sealed default is `{ "type": "...", }`. We bridge by
  * flattening the `params` object into the same JSON object as `type` before calling the
  * polymorphic decoder. That way the LLM sees a tidy nested schema while we get static
  * typing on the Kotlin side. Errors return [ParseResult.Err] with stable codes the tools
@@ -65,6 +65,7 @@ object WorkflowJson {
 
     sealed class ParseResult {
         data class Ok(val definition: WorkflowDefinition) : ParseResult()
+
         data class Err(val error: String, val detail: String) : ParseResult() {
             fun withIndex(idx: Int, kind: String): Err = Err(error, "$kind[$idx]: $detail")
         }
@@ -79,17 +80,13 @@ object WorkflowJson {
         val element: JsonElement = runCatching { Json.parseToJsonElement(rawJson) }.getOrElse {
             return ParseResult.Err("invalid_json", it.message ?: "JSON parse failed")
         }
-        val obj = element as? JsonObject
-            ?: return ParseResult.Err("not_an_object", "definition must be a JSON object")
+        val obj = element as? JsonObject ?: return ParseResult.Err("not_an_object", "definition must be a JSON object")
 
-        val name = obj["name"]?.jsonPrimitive?.contentOrNull
-            ?: return ParseResult.Err("missing_name", "name is required")
+        val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return ParseResult.Err("missing_name", "name is required")
         if (name.isBlank()) return ParseResult.Err("invalid_name", "name must be non-blank")
         if (name.length > WorkflowConstants.MAX_NAME_LENGTH) {
-            return ParseResult.Err("invalid_name",
-                "name must be ≤ ${WorkflowConstants.MAX_NAME_LENGTH} chars")
+            return ParseResult.Err("invalid_name", "name must be ≤ ${WorkflowConstants.MAX_NAME_LENGTH} chars")
         }
-
         val description = obj["description"]?.jsonPrimitive?.contentOrNull
             ?.take(WorkflowConstants.MAX_DESCRIPTION_LENGTH)
         val enabled = obj["enabled"]?.jsonPrimitive?.booleanOrNull ?: true
@@ -104,8 +101,7 @@ object WorkflowJson {
         val conditionsArr = obj["conditions"]?.jsonArray ?: buildJsonArray { }
         val conditions = mutableListOf<ConditionSpec>()
         for ((idx, el) in conditionsArr.withIndex()) {
-            val condObj = el as? JsonObject
-                ?: return ParseResult.Err("bad_condition_shape", "condition $idx is not an object")
+            val condObj = el as? JsonObject ?: return ParseResult.Err("bad_condition_shape", "condition $idx is not an object")
             val cond = when (val r = decodeCondition(condObj)) {
                 is DecodeOk -> r.value as ConditionSpec
                 is DecodeErr -> return r.err.withIndex(idx, "condition")
@@ -113,31 +109,34 @@ object WorkflowJson {
             conditions += cond
         }
 
-        val actionsArr = obj["actions"]?.jsonArray
-            ?: return ParseResult.Err("missing_actions", "actions array is required")
+        val actionsArr = obj["actions"]?.jsonArray ?: return ParseResult.Err("missing_actions", "actions array is required")
         if (actionsArr.isEmpty()) {
             return ParseResult.Err("empty_actions", "actions must be non-empty")
         }
         if (actionsArr.size > WorkflowConstants.MAX_ACTIONS) {
-            return ParseResult.Err("too_many_actions",
-                "actions must be ≤ ${WorkflowConstants.MAX_ACTIONS}")
+            return ParseResult.Err("too_many_actions", "actions must be ≤ ${WorkflowConstants.MAX_ACTIONS}")
         }
         val actions = mutableListOf<WorkflowAction>()
         for ((idx, el) in actionsArr.withIndex()) {
-            val ao = el as? JsonObject
-                ?: return ParseResult.Err("bad_action_shape", "action $idx is not an object")
-            val toolName = ao["tool"]?.jsonPrimitive?.contentOrNull
-                ?: return ParseResult.Err("missing_tool", "action $idx missing 'tool'")
-            // knownToolNames is the assistant's currently-registered tool surface. Empty set is
-            // a sentinel meaning "skip the check" — used when reading stored definitions back
+            val ao = el as? JsonObject ?: return ParseResult.Err("bad_action_shape", "action $idx is not an object")
+            val toolName = ao["tool"]?.jsonPrimitive?.contentOrNull ?: return ParseResult.Err("missing_tool", "action $idx missing 'tool'")
+            val args = ao["args"] as? JsonObject ?: buildJsonObject { }
+            // Resolve the whole stored call (name AND args) before validating it. Known
+            // tool names are the assistant's currently-registered surface; an empty set is a
+            // sentinel meaning "skip the check" — used when reading stored definitions back
             // from disk where we trust that what was persisted was already validated.
-            // A legacy name that resolves to a currently-registered canonical name is accepted,
-            // so a workflow authored before a tool merge keeps validating; an arbitrary unknown
-            // name is still rejected. This is a one-hop alias lookup, not a widening of the set.
-            val canonicalToolName = ToolNameAliases.canonicalName(toolName)
+            // A legacy call that resolves to a currently-registered canonical tool is
+            // accepted, so a workflow authored before a tool merge keeps validating; an
+            // arbitrary unknown name is still rejected. One-hop resolution, not a widening of
+            // the accepted set — and a rule that cannot be applied safely is a validation
+            // error, never a silent fallback to the legacy args.
+            val resolved = ToolNameAliases.resolveCall(toolName, args)
+            if (resolved.resolutionError != null) {
+                return ParseResult.Err("compat_error", "action $idx: ${resolved.resolutionError}")
+            }
+            val canonicalToolName = resolved.canonicalName
             if (knownToolNames.isNotEmpty() && canonicalToolName !in knownToolNames) {
-                return ParseResult.Err("unknown_tool",
-                    "action $idx tool '$toolName' is not registered for this assistant")
+                return ParseResult.Err("unknown_tool", "action $idx tool '$toolName' is not registered for this assistant")
             }
             // Forbid workflow chaining via workflow_run as an action. The spec explicitly
             // lists "Workflow chaining (one workflow triggering another)" as out-of-scope
@@ -145,30 +144,24 @@ object WorkflowJson {
             // could trigger an unbounded chain across distinct workflow ids that the
             // per-workflow Mutex doesn't catch.
             if (canonicalToolName == "workflow_run") {
-                return ParseResult.Err("workflow_chaining_disabled",
-                    "action $idx: workflow_run cannot be used as a workflow action (chaining is out-of-scope in v1)")
+                return ParseResult.Err("workflow_chaining_disabled", "action $idx: workflow_run cannot be used as a workflow action (chaining is out-of-scope in v1)")
             }
-            val args = ao["args"] as? JsonObject ?: buildJsonObject { }
             val timeout = ao["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60
-            if (timeout < WorkflowConstants.MIN_ACTION_TIMEOUT_S
-                || timeout > WorkflowConstants.MAX_ACTION_TIMEOUT_S) {
-                return ParseResult.Err("invalid_timeout",
-                    "action $idx timeout_seconds must be ${WorkflowConstants.MIN_ACTION_TIMEOUT_S}..${WorkflowConstants.MAX_ACTION_TIMEOUT_S}")
+            if (timeout < WorkflowConstants.MIN_ACTION_TIMEOUT_S || timeout > WorkflowConstants.MAX_ACTION_TIMEOUT_S) {
+                return ParseResult.Err("invalid_timeout", "action $idx timeout_seconds must be ${WorkflowConstants.MIN_ACTION_TIMEOUT_S}..${WorkflowConstants.MAX_ACTION_TIMEOUT_S}")
             }
+            // The requested tool name is stored as authored; the action runner resolves the
+            // canonical name and args at fire time.
             actions += WorkflowAction(tool = toolName, args = args, timeoutSeconds = timeout)
         }
 
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
         if (cooldown < 0 || cooldown > WorkflowConstants.MAX_COOLDOWN_S) {
-            return ParseResult.Err("invalid_cooldown",
-                "cooldown_seconds must be 0..${WorkflowConstants.MAX_COOLDOWN_S}")
+            return ParseResult.Err("invalid_cooldown", "cooldown_seconds must be 0..${WorkflowConstants.MAX_COOLDOWN_S}")
         }
-
         val maxRunsPerDay = obj["max_runs_per_day"]?.jsonPrimitive?.intOrNull
-        if (maxRunsPerDay != null && (maxRunsPerDay < WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR
-                    || maxRunsPerDay > WorkflowConstants.MAX_RUNS_PER_DAY_CEIL)) {
-            return ParseResult.Err("invalid_daily_cap",
-                "max_runs_per_day must be ${WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR}..${WorkflowConstants.MAX_RUNS_PER_DAY_CEIL}")
+        if (maxRunsPerDay != null && (maxRunsPerDay < WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR || maxRunsPerDay > WorkflowConstants.MAX_RUNS_PER_DAY_CEIL)) {
+            return ParseResult.Err("invalid_daily_cap", "max_runs_per_day must be ${WorkflowConstants.MAX_RUNS_PER_DAY_FLOOR}..${WorkflowConstants.MAX_RUNS_PER_DAY_CEIL}")
         }
 
         sanityCheckTrigger(trigger)?.let { return it }
@@ -176,25 +169,25 @@ object WorkflowJson {
             sanityCheckCondition(c)?.let { return it.withIndex(idx, "condition") }
         }
 
-        val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            ?: kotlin.uuid.Uuid.random().toString()
-
+        val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: kotlin.uuid.Uuid.random().toString()
         val now = System.currentTimeMillis()
-        return ParseResult.Ok(WorkflowDefinition(
-            id = id,
-            name = name.trim(),
-            description = description?.trim(),
-            enabled = enabled,
-            trigger = trigger,
-            conditions = conditions,
-            actions = actions,
-            cooldownSeconds = cooldown,
-            maxRunsPerDay = maxRunsPerDay,
-            createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
-            updatedAtMs = now,
-            authoringAssistantId = obj["authoring_assistant_id"]?.jsonPrimitive?.contentOrNull
-                ?.takeIf { it.isNotBlank() },
-        ))
+        return ParseResult.Ok(
+            WorkflowDefinition(
+                id = id,
+                name = name.trim(),
+                description = description?.trim(),
+                enabled = enabled,
+                trigger = trigger,
+                conditions = conditions,
+                actions = actions,
+                cooldownSeconds = cooldown,
+                maxRunsPerDay = maxRunsPerDay,
+                createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
+                updatedAtMs = now,
+                authoringAssistantId = obj["authoring_assistant_id"]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { it.isNotBlank() },
+            ),
+        )
     }
 
     /** Serialize a definition back to canonical wire JSON. */
@@ -205,9 +198,7 @@ object WorkflowJson {
             if (definition.description != null) put("description", JsonPrimitive(definition.description))
             put("enabled", JsonPrimitive(definition.enabled))
             put("trigger", encodeTrigger(definition.trigger))
-            put("conditions", buildJsonArray {
-                for (c in definition.conditions) add(encodeCondition(c))
-            })
+            put("conditions", buildJsonArray { for (c in definition.conditions) add(encodeCondition(c)) })
             put("actions", buildJsonArray {
                 for (a in definition.actions) {
                     add(buildJsonObject {
@@ -261,8 +252,7 @@ object WorkflowJson {
         if (actions.isEmpty()) return null
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
         val maxRunsPerDay = obj["max_runs_per_day"]?.jsonPrimitive?.intOrNull
-        val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            ?: kotlin.uuid.Uuid.random().toString()
+        val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: kotlin.uuid.Uuid.random().toString()
         val now = System.currentTimeMillis()
         return WorkflowDefinition(
             id = id,
@@ -308,8 +298,7 @@ object WorkflowJson {
         return runCatching {
             DecodeOk(json.decodeFromJsonElement(TriggerSpec.serializer(), flat))
         }.getOrElse {
-            DecodeErr(ParseResult.Err("unknown_trigger_type",
-                "trigger.type='$type' not recognised or params malformed: ${it.message}"))
+            DecodeErr(ParseResult.Err("unknown_trigger_type", "trigger.type='$type' not recognised or params malformed: ${it.message}"))
         }
     }
 
@@ -340,8 +329,7 @@ object WorkflowJson {
         return runCatching {
             DecodeOk(json.decodeFromJsonElement(ConditionSpec.serializer(), flat))
         }.getOrElse {
-            DecodeErr(ParseResult.Err("unknown_condition_type",
-                "condition.type='$type' not recognised or params malformed: ${it.message}"))
+            DecodeErr(ParseResult.Err("unknown_condition_type", "condition.type='$type' not recognised or params malformed: ${it.message}"))
         }
     }
 
@@ -357,62 +345,46 @@ object WorkflowJson {
 
     private fun sanityCheckTrigger(t: TriggerSpec): ParseResult.Err? = when (t) {
         is TriggerSpec.TimeCron -> when {
-            t.cron.isNullOrBlank() && t.timeOfDay.isNullOrBlank() ->
-                ParseResult.Err("invalid_trigger", "time_cron requires either cron or time_of_day")
-            !t.cron.isNullOrBlank() && !t.timeOfDay.isNullOrBlank() ->
-                ParseResult.Err("invalid_trigger", "time_cron: cron and time_of_day are mutually exclusive")
-            !t.timeOfDay.isNullOrBlank() && !validHHmm(t.timeOfDay) ->
-                ParseResult.Err("invalid_trigger", "time_cron.time_of_day must be HH:mm 24h")
-            t.daysOfWeek.any { it !in 1..7 } ->
-                ParseResult.Err("invalid_trigger", "time_cron.days_of_week values must be 1..7 (ISO, 1=Mon)")
+            t.cron.isNullOrBlank() && t.timeOfDay.isNullOrBlank() -> ParseResult.Err("invalid_trigger", "time_cron requires either cron or time_of_day")
+            !t.cron.isNullOrBlank() && !t.timeOfDay.isNullOrBlank() -> ParseResult.Err("invalid_trigger", "time_cron: cron and time_of_day are mutually exclusive")
+            !t.timeOfDay.isNullOrBlank() && !validHHmm(t.timeOfDay) -> ParseResult.Err("invalid_trigger", "time_cron.time_of_day must be HH:mm 24h")
+            t.daysOfWeek.any { it !in 1..7 } -> ParseResult.Err("invalid_trigger", "time_cron.days_of_week values must be 1..7 (ISO, 1=Mon)")
             // Reject unparseable cron up front so the LLM gets a repair signal at create
             // time instead of a workflow that silently fires hourly. Valid means either
             // the trigger family's own subset (@hourly/@daily/@weekly/@every Nx) or a
             // 5-field expression the shared scheduled-jobs parser accepts.
-            !t.cron.isNullOrBlank()
-                && me.rerere.rikkahub.workflow.trigger.TimeCronTriggerFamily.derivePeriodMs(t) == null
-                && me.rerere.rikkahub.service.CronExpressionParser.parse(t.cron.trim()).isFailure ->
-                ParseResult.Err("invalid_trigger",
-                    "time_cron.cron is not a valid cron expression (5-field UNIX dialect, @hourly/@daily/@weekly, or @every Ns/Nm/Nh)")
+            !t.cron.isNullOrBlank() && me.rerere.rikkahub.workflow.trigger.TimeCronTriggerFamily.derivePeriodMs(t) == null &&
+                me.rerere.rikkahub.service.CronExpressionParser.parse(t.cron.trim()).isFailure ->
+                ParseResult.Err("invalid_trigger", "time_cron.cron is not a valid cron expression (5-field UNIX dialect, @hourly/@daily/@weekly, or @every Ns/Nm/Nh)")
             else -> null
         }
-        is TriggerSpec.BatteryBelow -> if (t.thresholdPercent !in 1..100)
-            ParseResult.Err("invalid_trigger", "battery_below.threshold_percent must be 1..100") else null
-        is TriggerSpec.BatteryAbove -> if (t.thresholdPercent !in 1..100)
-            ParseResult.Err("invalid_trigger", "battery_above.threshold_percent must be 1..100") else null
+        is TriggerSpec.BatteryBelow -> if (t.thresholdPercent !in 1..100) ParseResult.Err("invalid_trigger", "battery_below.threshold_percent must be 1..100") else null
+        is TriggerSpec.BatteryAbove -> if (t.thresholdPercent !in 1..100) ParseResult.Err("invalid_trigger", "battery_above.threshold_percent must be 1..100") else null
         is TriggerSpec.GeofenceEnter -> validateGeofence(t.lat, t.lng, t.radiusM)
         is TriggerSpec.GeofenceExit -> validateGeofence(t.lat, t.lng, t.radiusM)
-        is TriggerSpec.AppLaunched -> if (t.packageName.isBlank())
-            ParseResult.Err("invalid_trigger", "app_launched.package_name must be non-blank") else null
-        is TriggerSpec.AppClosed -> if (t.packageName.isBlank())
-            ParseResult.Err("invalid_trigger", "app_closed.package_name must be non-blank") else null
+        is TriggerSpec.AppLaunched -> if (t.packageName.isBlank()) ParseResult.Err("invalid_trigger", "app_launched.package_name must be non-blank") else null
+        is TriggerSpec.AppClosed -> if (t.packageName.isBlank()) ParseResult.Err("invalid_trigger", "app_closed.package_name must be non-blank") else null
         is TriggerSpec.NotificationReceived -> when {
             // At least one filter — otherwise the workflow fires on every notification.
-            t.packageName.isNullOrBlank() && t.titleContains.isNullOrBlank()
-                && t.textContains.isNullOrBlank() && t.titleMatches.isNullOrBlank()
-                && t.textMatches.isNullOrBlank() ->
-                ParseResult.Err("invalid_trigger",
-                    "notification_received requires at least one filter (package_name, title_contains, text_contains, title_matches, or text_matches)")
+            t.packageName.isNullOrBlank() && t.titleContains.isNullOrBlank() && t.textContains.isNullOrBlank() &&
+                t.titleMatches.isNullOrBlank() && t.textMatches.isNullOrBlank() ->
+                ParseResult.Err("invalid_trigger", "notification_received requires at least one filter (package_name, title_contains, text_contains, title_matches, or text_matches)")
             // Reject uncompilable regex up front so the LLM gets a clear repair signal
             // instead of a workflow that silently never matches.
-            !t.titleMatches.isNullOrBlank() && !isValidRegex(t.titleMatches) ->
-                ParseResult.Err("invalid_trigger", "notification_received.title_matches is not a valid regex")
-            !t.textMatches.isNullOrBlank() && !isValidRegex(t.textMatches) ->
-                ParseResult.Err("invalid_trigger", "notification_received.text_matches is not a valid regex")
+            !t.titleMatches.isNullOrBlank() && !isValidRegex(t.titleMatches) -> ParseResult.Err("invalid_trigger", "notification_received.title_matches is not a valid regex")
+            !t.textMatches.isNullOrBlank() && !isValidRegex(t.textMatches) -> ParseResult.Err("invalid_trigger", "notification_received.text_matches is not a valid regex")
             else -> null
         }
         else -> null
     }
 
-    private fun isValidRegex(pattern: String): Boolean =
-        runCatching { java.util.regex.Pattern.compile(pattern) }.isSuccess
+    private fun isValidRegex(pattern: String): Boolean = runCatching { java.util.regex.Pattern.compile(pattern) }.isSuccess
 
     private fun validateGeofence(lat: Double, lng: Double, radiusM: Int): ParseResult.Err? {
         if (lat !in -90.0..90.0) return ParseResult.Err("invalid_trigger", "geofence.lat must be -90..90")
         if (lng !in -180.0..180.0) return ParseResult.Err("invalid_trigger", "geofence.lng must be -180..180")
         if (radiusM !in WorkflowConstants.MIN_GEOFENCE_RADIUS_M..WorkflowConstants.MAX_GEOFENCE_RADIUS_M) {
-            return ParseResult.Err("invalid_trigger",
-                "geofence.radius_m must be ${WorkflowConstants.MIN_GEOFENCE_RADIUS_M}..${WorkflowConstants.MAX_GEOFENCE_RADIUS_M}")
+            return ParseResult.Err("invalid_trigger", "geofence.radius_m must be ${WorkflowConstants.MIN_GEOFENCE_RADIUS_M}..${WorkflowConstants.MAX_GEOFENCE_RADIUS_M}")
         }
         return null
     }
@@ -423,24 +395,15 @@ object WorkflowJson {
             !validHHmm(c.end) -> ParseResult.Err("invalid_condition", "time_between.end must be HH:mm 24h")
             else -> null
         }
-        is ConditionSpec.TimeAfterSunset -> if (c.offsetMinutes !in -720..720)
-            ParseResult.Err("invalid_condition", "time_after_sunset.offset_minutes must be -720..720") else null
-        is ConditionSpec.TimeBeforeSunrise -> if (c.offsetMinutes !in -720..720)
-            ParseResult.Err("invalid_condition", "time_before_sunrise.offset_minutes must be -720..720") else null
-        is ConditionSpec.DayOfWeekIn -> if (c.days.any { it !in 1..7 })
-            ParseResult.Err("invalid_condition", "day_of_week_in.days values must be 1..7 (ISO, 1=Mon)") else null
-        is ConditionSpec.WifiSsidIs -> if (c.ssid.isBlank())
-            ParseResult.Err("invalid_condition", "wifi_ssid_is.ssid must be non-blank") else null
-        is ConditionSpec.WifiSsidIn -> if (c.ssids.isEmpty() || c.ssids.any { it.isBlank() })
-            ParseResult.Err("invalid_condition", "wifi_ssid_in.ssids must be non-empty and non-blank") else null
-        is ConditionSpec.BatteryAbove -> if (c.percent !in 1..100)
-            ParseResult.Err("invalid_condition", "battery_above.percent must be 1..100") else null
-        is ConditionSpec.BatteryBelow -> if (c.percent !in 1..100)
-            ParseResult.Err("invalid_condition", "battery_below.percent must be 1..100") else null
-        is ConditionSpec.ForegroundAppIs -> if (c.packageName.isBlank())
-            ParseResult.Err("invalid_condition", "foreground_app_is.package_name must be non-blank") else null
-        is ConditionSpec.ForegroundAppIn -> if (c.packageNames.isEmpty() || c.packageNames.any { it.isBlank() })
-            ParseResult.Err("invalid_condition", "foreground_app_in.package_names must be non-empty and non-blank") else null
+        is ConditionSpec.TimeAfterSunset -> if (c.offsetMinutes !in -720..720) ParseResult.Err("invalid_condition", "time_after_sunset.offset_minutes must be -720..720") else null
+        is ConditionSpec.TimeBeforeSunrise -> if (c.offsetMinutes !in -720..720) ParseResult.Err("invalid_condition", "time_before_sunrise.offset_minutes must be -720..720") else null
+        is ConditionSpec.DayOfWeekIn -> if (c.days.any { it !in 1..7 }) ParseResult.Err("invalid_condition", "day_of_week_in.days values must be 1..7 (ISO, 1=Mon)") else null
+        is ConditionSpec.WifiSsidIs -> if (c.ssid.isBlank()) ParseResult.Err("invalid_condition", "wifi_ssid_is.ssid must be non-blank") else null
+        is ConditionSpec.WifiSsidIn -> if (c.ssids.isEmpty() || c.ssids.any { it.isBlank() }) ParseResult.Err("invalid_condition", "wifi_ssid_in.ssids must be non-empty and non-blank") else null
+        is ConditionSpec.BatteryAbove -> if (c.percent !in 1..100) ParseResult.Err("invalid_condition", "battery_above.percent must be 1..100") else null
+        is ConditionSpec.BatteryBelow -> if (c.percent !in 1..100) ParseResult.Err("invalid_condition", "battery_below.percent must be 1..100") else null
+        is ConditionSpec.ForegroundAppIs -> if (c.packageName.isBlank()) ParseResult.Err("invalid_condition", "foreground_app_is.package_name must be non-blank") else null
+        is ConditionSpec.ForegroundAppIn -> if (c.packageNames.isEmpty() || c.packageNames.any { it.isBlank() }) ParseResult.Err("invalid_condition", "foreground_app_in.package_names must be non-empty and non-blank") else null
         else -> null
     }
 

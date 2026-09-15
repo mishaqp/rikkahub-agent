@@ -1,0 +1,97 @@
+name: Apply session ID propagation fix
+
+on:
+  push:
+    branches:
+      - fix/session-id-propagation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/session-id-propagation
+          fetch-depth: 0
+
+      - name: Apply upstream session-id propagation patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
+              p.write_text(text.replace(old, new, count))
+
+          provider = "ai/src/main/java/me/rerere/ai/provider/Provider.kt"
+          replace_exact(
+              provider,
+              "import me.rerere.ai.ui.UIMessage\n",
+              "import me.rerere.ai.ui.UIMessage\nimport kotlin.uuid.Uuid\n",
+          )
+          replace_exact(
+              provider,
+              "    val sessionId: String? = null,",
+              "    val sessionId: String? = Uuid.random().toString(),",
+          )
+
+          generation = "app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt"
+          replace_exact(
+              generation,
+              "            sessionId = conversationId?.toString(),",
+              "            sessionId = (conversationId ?: Uuid.random()).toString(),",
+          )
+
+          chat = "app/src/main/java/me/rerere/rikkahub/service/ChatService.kt"
+          replace_exact(
+              chat,
+              """internal fun backgroundTextGenerationParams(\n    model: Model,\n    reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,\n): TextGenerationParams = TextGenerationParams(\n    model = model,\n    reasoningLevel = reasoningLevel,\n    customHeaders = model.customHeaders,\n    customBody = model.customBodies,\n)""",
+              """internal fun backgroundTextGenerationParams(\n    model: Model,\n    conversationId: Uuid,\n    reasoningLevel: ReasoningLevel = ReasoningLevel.OFF,\n): TextGenerationParams = TextGenerationParams(\n    model = model,\n    reasoningLevel = reasoningLevel,\n    customHeaders = model.customHeaders,\n    customBody = model.customBodies,\n    sessionId = conversationId.toString(),\n)""",
+          )
+          replace_exact(
+              chat,
+              "backgroundTextGenerationParams(model, settings.fastModelReasoningLevel)",
+              "backgroundTextGenerationParams(model, conversationId, settings.fastModelReasoningLevel)",
+              count=2,
+          )
+          replace_exact(
+              chat,
+              "backgroundTextGenerationParams(model).copy(",
+              "backgroundTextGenerationParams(model, conversation.id).copy(",
+          )
+
+          test = "app/src/test/java/me/rerere/rikkahub/service/ChatServiceTest.kt"
+          replace_exact(
+              test,
+              """        val params = backgroundTextGenerationParams(model)\n\n        assertEquals(model, params.model)\n        assertEquals(ReasoningLevel.OFF, params.reasoningLevel)\n        assertEquals(headers, params.customHeaders)\n        assertEquals(bodies, params.customBody)""",
+              """        val conversationId = Uuid.random()\n        val params = backgroundTextGenerationParams(model, conversationId)\n\n        assertEquals(model, params.model)\n        assertEquals(ReasoningLevel.OFF, params.reasoningLevel)\n        assertEquals(headers, params.customHeaders)\n        assertEquals(bodies, params.customBody)\n        assertEquals(conversationId.toString(), params.sessionId)""",
+          )
+          PY
+
+          git diff --check
+          git diff -- ai/src/main/java/me/rerere/ai/provider/Provider.kt \
+            app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt \
+            app/src/main/java/me/rerere/rikkahub/service/ChatService.kt \
+            app/src/test/java/me/rerere/rikkahub/service/ChatServiceTest.kt
+
+      - name: Commit patch and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-session-id-fix.yml
+          git add ai/src/main/java/me/rerere/ai/provider/Provider.kt \
+            app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt \
+            app/src/main/java/me/rerere/rikkahub/service/ChatService.kt \
+            app/src/test/java/me/rerere/rikkahub/service/ChatServiceTest.kt
+          git commit -m "fix: propagate session id to non-chat requests"
+          git push origin HEAD:fix/session-id-propagation

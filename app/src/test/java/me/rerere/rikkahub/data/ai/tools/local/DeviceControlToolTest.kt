@@ -48,6 +48,22 @@ class DeviceControlToolTest {
     }
 
     @Test
+    fun `missing action returns controlled error without invoking a delegate`() = runBlocking {
+        val calls = mutableListOf<String>()
+        val tool = deviceControlTool(
+            enabledActions = setOf("set_torch"),
+            delegates = mapOf("set_torch" to delegate("set_torch", "torch", calls)),
+        )
+
+        val result = tool.execute(buildJsonObject { put("on", true) })
+        val text = (result.single() as UIMessagePart.Text).text
+
+        assertTrue(calls.isEmpty())
+        assertTrue(text.contains("missing_action"))
+        assertTrue(text.contains("set_torch"))
+    }
+
+    @Test
     fun `disabled action is refused even when composite tool exists`() = runBlocking {
         val calls = mutableListOf<String>()
         val tool = deviceControlTool(

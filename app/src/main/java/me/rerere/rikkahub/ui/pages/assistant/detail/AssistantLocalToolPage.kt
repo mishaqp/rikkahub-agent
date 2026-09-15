@@ -160,6 +160,18 @@ private fun AssistantLocalToolContent(
     var cronToastShownThisVisit by remember { mutableStateOf(false) }
     var workflowsDialogShownThisVisit by remember { mutableStateOf(false) }
     var keyboardDialogShownThisVisit by remember { mutableStateOf(false) }
+    var deviceInfoExpanded by remember { mutableStateOf(false) }
+    val deviceInfoOptions = remember {
+        setOf(
+            LocalToolOption.Battery,
+            LocalToolOption.AudioInfo,
+            LocalToolOption.TelephonyInfo,
+            LocalToolOption.WifiInfo,
+            LocalToolOption.StorageInfo,
+            LocalToolOption.Sensors,
+        )
+    }
+    val enabledDeviceInfoCount = deviceInfoOptions.count { it in assistant.localTools }
 
     val cronHintText = stringResource(R.string.assistant_page_local_tools_cron_jobs_toast_hint)
     val termuxCommand = stringResource(R.string.assistant_page_local_tools_termux_postgrant_command)
@@ -329,102 +341,112 @@ private fun AssistantLocalToolContent(
             )
         }
 
-        // Device info section
-        Text(
-            text = stringResource(R.string.assistant_page_local_tools_section_device_info),
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(start = 16.dp, top = 8.dp)
-        )
+        // The model sees one device_info composite schema, while the UI keeps the
+        // six granular permission toggles behind one expandable visual group.
         CardGroup {
             item(
+                onClick = { deviceInfoExpanded = !deviceInfoExpanded },
                 headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_battery_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_battery_desc))
+                    Text(stringResource(R.string.assistant_page_local_tools_section_device_info))
                 },
                 trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Battery),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Battery, it) }
+                    Text(
+                        "$enabledDeviceInfoCount/${deviceInfoOptions.size}  " +
+                            if (deviceInfoExpanded) "▲" else "▼"
                     )
-                }
+                },
             )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_audio_info_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_audio_info_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.AudioInfo),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.AudioInfo, it) }
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_telephony_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_telephony_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.TelephonyInfo),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.TelephonyInfo, it) },
-                        requiredRuntimePerms = listOf(Manifest.permission.READ_PHONE_STATE),
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_wifi_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_wifi_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.WifiInfo),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.WifiInfo, it) },
-                        requiredRuntimePerms = listOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                        ),
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_sensors_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_sensors_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Sensors),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Sensors, it) }
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_storage_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_storage_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.StorageInfo),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.StorageInfo, it) }
-                    )
-                }
-            )
+            if (deviceInfoExpanded) {
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_battery_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_battery_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Battery),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Battery, it) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_audio_info_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_audio_info_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.AudioInfo),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.AudioInfo, it) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_telephony_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_telephony_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.TelephonyInfo),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.TelephonyInfo, it) },
+                            requiredRuntimePerms = listOf(Manifest.permission.READ_PHONE_STATE),
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_wifi_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_wifi_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.WifiInfo),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.WifiInfo, it) },
+                            requiredRuntimePerms = listOf(
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ),
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_sensors_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_sensors_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Sensors),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Sensors, it) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_storage_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_storage_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.StorageInfo),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.StorageInfo, it) }
+                        )
+                    }
+                )
+            }
         }
 
         // Output section

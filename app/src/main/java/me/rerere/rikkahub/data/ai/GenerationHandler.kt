@@ -714,7 +714,9 @@ class GenerationHandler(
                             ))
                         }
                         // Tool needs approval and state is Auto:
-                        toolDef?.needsApproval(tool.inputAsJson()) == true && tool.approvalState is ToolApprovalState.Auto -> {
+                        toolDef?.needsApproval(
+                            json.parseToJsonElement(resolvedCall.canonicalInput.ifBlank { "{}" })
+                        ) == true && tool.approvalState is ToolApprovalState.Auto -> {
                             // Fresh per-tool auto-approval check (was a frozen pre-
                             // resolved set). Costs a DataStore.first() per tool but tools
                             // are typically <5 per turn so the latency is negligible, and
@@ -889,9 +891,10 @@ class GenerationHandler(
                                 // counts as ONE tool rather than two — otherwise the guard
                                 // would see two distinct signatures and never trip.
                                 .map {
+                                    val resolvedPrior = ToolNameAliases.resolveCall(it.toolName, it.input)
                                     PriorToolCall(
-                                        it.toolName,
-                                        ToolNameAliases.resolveCall(it.toolName, it.input).signature,
+                                        resolvedPrior.canonicalName,
+                                        resolvedPrior.signature,
                                         epochMs,
                                     )
                                 }

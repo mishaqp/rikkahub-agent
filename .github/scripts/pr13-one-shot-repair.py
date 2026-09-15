@@ -8,19 +8,29 @@ def replace_exact(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-# 1) Repair the three generic types lost while GenerationHandler.kt was reconstructed.
+def replace_count(text: str, old: str, new: str, expected: int, label: str) -> str:
+    count = text.count(old)
+    if count != expected:
+        raise SystemExit(f"{label}: expected exactly {expected} matches, got {count}")
+    return text.replace(old, new)
+
+
+# 1) Repair the generic types lost while GenerationHandler.kt was reconstructed.
+# The two conversation-set parameters occur in both generateText() and generateInternal().
 gh_path = Path("app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt")
 gh = gh_path.read_text(encoding="utf-8")
-gh = replace_exact(
+gh = replace_count(
     gh,
     "conversationModeInjectionIds: Set<String> = emptySet(),",
     "conversationModeInjectionIds: Set<Uuid> = emptySet(),",
+    2,
     "GenerationHandler modeInjectionIds type",
 )
-gh = replace_exact(
+gh = replace_count(
     gh,
     "conversationLorebookIds: Set<String> = emptySet(),",
     "conversationLorebookIds: Set<Uuid> = emptySet(),",
+    2,
     "GenerationHandler lorebookIds type",
 )
 gh = replace_exact(

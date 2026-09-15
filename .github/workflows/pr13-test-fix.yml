@@ -1,0 +1,42 @@
+name: PR13 one-shot test fix
+
+on:
+  push:
+    branches:
+      - refactor/tool-name-compat-v2
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix malformed-JSON fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/test/java/me/rerere/rikkahub/data/ai/tools/ToolNameAliasesTest.kt')
+          s = p.read_text(encoding='utf-8')
+          old = 'ToolNameAliases.resolveRawCall("list_files", "not-json", rules)'
+          new = 'ToolNameAliases.resolveRawCall("list_files", "{", rules)'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one fixture match, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- app/src/test/java/me/rerere/rikkahub/data/ai/tools/ToolNameAliasesTest.kt
+
+      - name: Commit test fixture fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/test/java/me/rerere/rikkahub/data/ai/tools/ToolNameAliasesTest.kt
+          git commit -m "test(tools): use definitely malformed JSON fixture"
+          git push origin HEAD:${GITHUB_REF_NAME}

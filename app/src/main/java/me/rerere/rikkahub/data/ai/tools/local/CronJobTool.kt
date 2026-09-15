@@ -31,6 +31,7 @@ import me.rerere.rikkahub.service.CronJobScheduler
 import java.time.ZoneId
 
 private fun textPart(s: String) = listOf(UIMessagePart.Text(s))
+
 private fun errEnvelope(code: String, detail: String, extra: JsonObject? = null): String =
     buildJsonObject {
         put("error", code)
@@ -45,6 +46,7 @@ private fun errEnvelope(code: String, detail: String, extra: JsonObject? = null)
  * cron expression makes bounds checking moot).
  */
 object ScheduleJobValidator {
+
     data class ValidationError(val code: String, val detail: String, val extra: JsonObject? = null)
 
     fun validate(input: JsonObject, knownToolNames: List<String>): ValidationError? {
@@ -55,44 +57,41 @@ object ScheduleJobValidator {
         if (mode != "llm" && mode != "direct") return ValidationError("bad_mode", "mode must be 'llm' or 'direct'")
 
         val scheduleType = (input["schedule_type"] as? JsonPrimitive)?.contentOrNull
-        if (scheduleType != "once" && scheduleType != "cron")
-            return ValidationError("bad_schedule_type", "schedule_type must be 'once' or 'cron'")
+        if (scheduleType != "once" && scheduleType != "cron") return ValidationError("bad_schedule_type", "schedule_type must be 'once' or 'cron'")
 
         // Mode-specific
         val prompt = (input["prompt"] as? JsonPrimitive)?.contentOrNull
         val actions = input["actions"] as? kotlinx.serialization.json.JsonArray
         when (mode) {
             "llm" -> {
-                if (prompt.isNullOrBlank() || actions != null)
-                    return ValidationError("mutual_exclusive", "mode='llm' requires prompt and forbids actions")
-                if (prompt.length > 4000)
-                    return ValidationError("prompt_too_long",
-                        "prompt capped at 4000 chars (got ${prompt.length})")
+                if (prompt.isNullOrBlank() || actions != null) return ValidationError("mutual_exclusive", "mode='llm' requires prompt and forbids actions")
+                if (prompt.length > 4000) return ValidationError("prompt_too_long", "prompt capped at 4000 chars (got ${prompt.length})")
             }
             "direct" -> {
-                if (actions == null || prompt != null)
-                    return ValidationError("mutual_exclusive", "mode='direct' requires actions and forbids prompt")
-                if (actions.isEmpty())
-                    return ValidationError("empty_actions", "mode='direct' requires non-empty actions array")
-                if (actions.size > 50)
-                    return ValidationError("too_many_actions",
-                        "actions array capped at 50 (got ${actions.size})")
+                if (actions == null || prompt != null) return ValidationError("mutual_exclusive", "mode='direct' requires actions and forbids prompt")
+                if (actions.isEmpty()) return ValidationError("empty_actions", "mode='direct' requires non-empty actions array")
+                if (actions.size > 50) return ValidationError("too_many_actions", "actions array capped at 50 (got ${actions.size})")
                 for ((idx, el) in actions.withIndex()) {
                     if (el !is JsonObject) return ValidationError("bad_action_shape", "action $idx is not an object")
                     val toolName = (el["tool"] as? JsonPrimitive)?.contentOrNull
                         ?: return ValidationError("missing_tool", "action $idx missing tool")
                     val args = el["args"] as? JsonObject
                         ?: return ValidationError("missing_args", "action $idx missing args object")
-                    // Validation accepts a legacy name when it resolves to a currently-registered
-                    // canonical one, so a job authored before a tool merge keeps validating. An
-                    // arbitrary unknown name is still rejected — this is a one-hop alias lookup,
-                    // not a widening of the accepted set.
-                    val canonicalToolName = ToolNameAliases.canonicalName(toolName)
-                    if (canonicalToolName !in knownToolNames)
+                    // A legacy call is accepted when it resolves (name AND args) to a
+                    // currently-registered canonical tool, so a job authored before a tool
+                    // merge keeps validating. An arbitrary unknown name is still rejected —
+                    // this is one-hop call resolution, not a widening of the accepted set.
+                    // A rule that cannot be applied safely is a validation error, never a
+                    // silent fallback to executing the legacy args.
+                    val resolved = ToolNameAliases.resolveCall(toolName, args)
+                    if (resolved.resolutionError != null) {
+                        return ValidationError("compat_error", "action $idx: ${resolved.resolutionError}")
+                    }
+                    if (resolved.canonicalName !in knownToolNames) {
                         return ValidationError("unknown_tool", "tool '$toolName' not registered for assistant")
-                    val hardline = HardlineCommandGuard.checkTool(canonicalToolName, args.toString())
-                    if (hardline != null)
-                        return ValidationError("hardline_blocked", "action $idx: $hardline")
+                    }
+                    val hardline = HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput)
+                    if (hardline != null) return ValidationError("hardline_blocked", "action $idx: $hardline")
                 }
             }
         }
@@ -102,19 +101,16 @@ object ScheduleJobValidator {
         val cronExpression = (input["cron_expression"] as? JsonPrimitive)?.contentOrNull
         when (scheduleType) {
             "once" -> {
-                if (atUnixMs == null || cronExpression != null)
-                    return ValidationError("mutual_exclusive", "schedule_type='once' requires at_unix_ms and forbids cron_expression")
+                if (atUnixMs == null || cronExpression != null) return ValidationError("mutual_exclusive", "schedule_type='once' requires at_unix_ms and forbids cron_expression")
             }
             "cron" -> {
-                if (cronExpression.isNullOrBlank() || atUnixMs != null)
-                    return ValidationError("mutual_exclusive", "schedule_type='cron' requires cron_expression and forbids at_unix_ms")
+                if (cronExpression.isNullOrBlank() || atUnixMs != null) return ValidationError("mutual_exclusive", "schedule_type='cron' requires cron_expression and forbids at_unix_ms")
                 CronExpressionParser.parse(cronExpression).onFailure {
-                    return ValidationError("invalid_cron", it.message ?: "cron parse failed",
-                        buildJsonObject {
-                            put("examples", buildJsonArray {
-                                add("0 9 * * MON-FRI"); add("@every 30m"); add("*/15 * * * *"); add("@daily")
-                            })
+                    return ValidationError("invalid_cron", it.message ?: "cron parse failed", buildJsonObject {
+                        put("examples", buildJsonArray {
+                            add("0 9 * * MON-FRI"); add("@every 30m"); add("*/15 * * * *"); add("@daily")
                         })
+                    })
                 }
             }
         }
@@ -122,38 +118,30 @@ object ScheduleJobValidator {
         // Bounds (cron only)
         val startAt = (input["start_at_unix_ms"] as? JsonPrimitive)?.longOrNull
         val endAt = (input["end_at_unix_ms"] as? JsonPrimitive)?.longOrNull
-        if (endAt != null && startAt != null && endAt <= startAt)
-            return ValidationError("bounds_inverted", "end_at_unix_ms must be > start_at_unix_ms")
-        if (endAt != null && endAt < System.currentTimeMillis())
-            return ValidationError("bounds_past", "end_at_unix_ms is in the past")
+        if (endAt != null && startAt != null && endAt <= startAt) return ValidationError("bounds_inverted", "end_at_unix_ms must be > start_at_unix_ms")
+        if (endAt != null && endAt < System.currentTimeMillis()) return ValidationError("bounds_past", "end_at_unix_ms is in the past")
 
         // Timezone
         val tz = (input["timezone"] as? JsonPrimitive)?.contentOrNull
-        if (!tz.isNullOrBlank() && runCatching { ZoneId.of(tz) }.isFailure)
-            return ValidationError("bad_timezone", "unknown IANA zone: '$tz'")
+        if (!tz.isNullOrBlank() && runCatching { ZoneId.of(tz) }.isFailure) return ValidationError("bad_timezone", "unknown IANA zone: '$tz'")
 
         // max_runs — capped at MAX_HISTORY_RETENTION so a job's target is always within
         // what historyRetentionFor() will keep; above that, run-history trim would cap
         // countSuccessful() below max_runs and the job would fire forever instead of
         // stopping at its configured count.
         val maxRuns = (input["max_runs"] as? JsonPrimitive)?.intOrNull
-        if (maxRuns != null && maxRuns < 1)
-            return ValidationError("max_runs_invalid", "max_runs must be >= 1")
-        if (maxRuns != null && maxRuns > me.rerere.rikkahub.service.MAX_HISTORY_RETENTION)
-            return ValidationError("max_runs_invalid",
-                "max_runs must be <= ${me.rerere.rikkahub.service.MAX_HISTORY_RETENTION}")
+        if (maxRuns != null && maxRuns < 1) return ValidationError("max_runs_invalid", "max_runs must be >= 1")
+        if (maxRuns != null && maxRuns > me.rerere.rikkahub.service.MAX_HISTORY_RETENTION) return ValidationError("max_runs_invalid", "max_runs must be <= ${me.rerere.rikkahub.service.MAX_HISTORY_RETENTION}")
 
         // catchup
         val catchup = (input["catchup"] as? JsonPrimitive)?.contentOrNull
-        if (catchup != null && catchup !in setOf("skip", "fire_once", "fire_all"))
-            return ValidationError("bad_catchup", "catchup must be 'skip', 'fire_once', or 'fire_all'")
+        if (catchup != null && catchup !in setOf("skip", "fire_once", "fire_all")) return ValidationError("bad_catchup", "catchup must be 'skip', 'fire_once', or 'fire_all'")
 
         // Tags — comma-joined; reject anything that would break the LIKE query
         val tags = input["tags"] as? kotlinx.serialization.json.JsonArray
         tags?.forEach { tag ->
             val v = (tag as? JsonPrimitive)?.contentOrNull ?: return ValidationError("bad_tag", "tag is not a string")
-            if (!v.matches(Regex("^[a-z0-9-]{1,40}$")))
-                return ValidationError("bad_tag", "tag '$v' must be lowercase alphanumeric or dash, ≤40 chars")
+            if (!v.matches(Regex("^[a-z0-9-]{1,40}$"))) return ValidationError("bad_tag", "tag '$v' must be lowercase alphanumeric or dash, ≤40 chars")
         }
 
         return null
@@ -176,9 +164,7 @@ private fun jobToJson(j: ScheduledJobEntity): JsonObject = buildJsonObject {
     j.maxRuns?.let { put("max_runs", it) }
     put("runs_so_far", j.runsSoFar)
     put("catchup", j.catchup)
-    j.tags?.let {
-        put("tags", buildJsonArray { it.split(",").filter { t -> t.isNotBlank() }.forEach { t -> add(t) } })
-    }
+    j.tags?.let { put("tags", buildJsonArray { it.split(",").filter { t -> t.isNotBlank() }.forEach { t -> add(t) } }) }
     put("enabled", j.enabled)
     put("created_at_ms", j.createdAtMs)
     j.lastRunAtMs?.let { put("last_run_at_ms", it) }
@@ -193,23 +179,7 @@ fun scheduleJobTool(
 ): Tool = Tool(
     name = "schedule_job",
     description = """
-        Schedule a recurring or one-shot job. Two modes: 'llm' (sends the prompt to an
-        assistant at fire time, model decides what to do) and 'direct' (runs a fixed list
-        of tool calls at fire time, no LLM, no tokens, deterministic).
-        Two timing types: 'once' (single absolute timestamp) and 'cron' (5-field cron
-        expression with aliases like @hourly, @daily, @every 30m).
-
-        Pick 'direct' when the action is a fixed side effect ('post good morning every
-        8am', 'screenshot every hour'). Free, fast, predictable.
-        Pick 'llm' when the action requires reasoning ('if battery is low, message me',
-        'summarize last hour of notifications').
-
-        Cron examples: '0 9 * * MON-FRI' (weekdays 9am), '*/15 * * * *' (every 15 min),
-        '@every 2h' (every 2h), '@daily' (midnight), '0 0 1 * *' (first of every month).
-        Timezone defaults to the device's; pass an IANA id to override.
-
-        catchup controls missed-window behavior on reboot/process kill: 'skip',
-        'fire_once' (DEFAULT), 'fire_all' (capped at 20).
+        Schedule a recurring or one-shot job. Two modes: 'llm' (sends the prompt to an assistant at fire time, model decides what to do) and 'direct' (runs a fixed list of tool calls at fire time, no LLM, no tokens, deterministic). Two timing types: 'once' (single absolute timestamp) and 'cron' (5-field cron expression with aliases like @hourly, @daily, @every 30m). Pick 'direct' when the action is a fixed side effect ('post good morning every 8am', 'screenshot every hour'). Free, fast, predictable. Pick 'llm' when the action requires reasoning ('if battery is low, message me', 'summarize last hour of notifications'). Cron examples: '0 9 * * MON-FRI' (weekdays 9am), '*/15 * * * *' (every 15 min), '@every 2h' (every 2h), '@daily' (midnight), '0 0 1 * *' (first of every month). Timezone defaults to the device's; pass an IANA id to override. catchup controls missed-window behavior on reboot/process kill: 'skip', 'fire_once' (DEFAULT), 'fire_all' (capped at 20).
     """.trimIndent().replace("\n", " "),
     parameters = {
         InputSchema.Obj(
@@ -253,9 +223,9 @@ fun scheduleJobTool(
         val assistantId = (obj["assistant_id"] as? JsonPrimitive)?.contentOrNull
             ?: settingsStore.settingsFlow.value.getCurrentAssistant().id.toString()
         val tagsCsv = (obj["tags"] as? kotlinx.serialization.json.JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.joinToString(",")
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.joinToString(",")
         val nowMs = System.currentTimeMillis()
-
         val job = ScheduledJobEntity(
             id = Uuid.random().toString(),
             name = obj["name"]!!.jsonPrimitive.content,
@@ -298,9 +268,7 @@ fun listJobsTool(repo: ScheduledJobRepository): Tool = Tool(
         val mode = (obj["mode"] as? JsonPrimitive)?.contentOrNull
         val enabled = (obj["enabled"] as? JsonPrimitive)?.booleanOrNull
         val rows = repo.listFiltered(tag, mode, enabled)
-        textPart(buildJsonObject {
-            put("jobs", buildJsonArray { rows.forEach { add(jobToJson(it)) } })
-        }.toString())
+        textPart(buildJsonObject { put("jobs", buildJsonArray { rows.forEach { add(jobToJson(it)) } }) }.toString())
     },
 )
 
@@ -313,9 +281,7 @@ fun deleteJobTool(
     description = "Permanently delete a scheduled job and its run history.".trimIndent(),
     parameters = {
         InputSchema.Obj(
-            properties = buildJsonObject {
-                put("id", buildJsonObject { put("type","string") })
-            },
+            properties = buildJsonObject { put("id", buildJsonObject { put("type","string") }) },
             required = listOf("id"),
         )
     },
@@ -341,8 +307,7 @@ fun pauseJobTool(repo: ScheduledJobRepository, scheduler: CronJobScheduler): Too
     execute = { input ->
         val id = input.jsonObject["id"]?.jsonPrimitive?.contentOrNull
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
-        val job = repo.getById(id)
-            ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
+        val job = repo.getById(id) ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
         repo.update(job.copy(enabled = false))
         scheduler.cancel(id)
         textPart(buildJsonObject { put("success", true); put("id", id) }.toString())
@@ -361,8 +326,7 @@ fun resumeJobTool(repo: ScheduledJobRepository, scheduler: CronJobScheduler): To
     execute = { input ->
         val id = input.jsonObject["id"]?.jsonPrimitive?.contentOrNull
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
-        val job = repo.getById(id)
-            ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
+        val job = repo.getById(id) ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
         val updated = job.copy(enabled = true)
         repo.update(updated)
         scheduler.schedule(updated)
@@ -385,16 +349,14 @@ fun triggerJobNowTool(
     execute = { input ->
         val id = input.jsonObject["id"]?.jsonPrimitive?.contentOrNull
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
-        val job = repo.getById(id)
-            ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
+        val job = repo.getById(id) ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
         if (!job.enabled) {
-            return@Tool textPart(errEnvelope("job_disabled",
-                "job '$id' is paused; resume it with resume_job first"))
+            return@Tool textPart(errEnvelope("job_disabled", "job '$id' is paused; resume it with resume_job first"))
         }
         scheduler.triggerNow(id)
         textPart(buildJsonObject {
             put("success", true)
-            put("run_id", Uuid.random().toString())          // synthetic placeholder; the real row is written by the worker
+            put("run_id", Uuid.random().toString()) // synthetic placeholder; the real row is written by the worker
             put("fired_at_ms", System.currentTimeMillis())
         }.toString())
     },
@@ -418,20 +380,21 @@ fun getJobHistoryTool(
     execute = { input ->
         val id = input.jsonObject["id"]?.jsonPrimitive?.contentOrNull
             ?: return@Tool textPart(errEnvelope("missing_id", "id is required"))
-        repo.getById(id)
-            ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
+        repo.getById(id) ?: return@Tool textPart(errEnvelope("not_found", "no job with id '$id'"))
         val limit = (input.jsonObject["limit"] as? JsonPrimitive)?.intOrNull?.coerceIn(1, 100) ?: 20
         val rows = runRepo.getRecent(id, limit)
         textPart(buildJsonObject {
             put("runs", buildJsonArray {
-                rows.forEach { r -> add(buildJsonObject {
-                    put("id", r.id); put("scheduled_at_ms", r.scheduledAtMs)
-                    put("started_at_ms", r.startedAtMs)
-                    r.finishedAtMs?.let { put("finished_at_ms", it) }
-                    put("outcome", r.outcome); put("mode", r.mode)
-                    r.conversationId?.let { put("conversation_id", it) }
-                    r.errorMessage?.let { put("error_message", it) }
-                }) }
+                rows.forEach { r ->
+                    add(buildJsonObject {
+                        put("id", r.id); put("scheduled_at_ms", r.scheduledAtMs)
+                        put("started_at_ms", r.startedAtMs)
+                        r.finishedAtMs?.let { put("finished_at_ms", it) }
+                        put("outcome", r.outcome); put("mode", r.mode)
+                        r.conversationId?.let { put("conversation_id", it) }
+                        r.errorMessage?.let { put("error_message", it) }
+                    })
+                }
             })
         }.toString())
     },

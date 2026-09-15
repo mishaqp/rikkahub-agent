@@ -2,6 +2,9 @@ package me.rerere.rikkahub.data.ai.tools
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.Tool
 
 /**
@@ -27,8 +30,8 @@ import me.rerere.ai.core.Tool
  *
  * - One hop. legacy -> canonical. A canonical name must not itself be a key of the
  * table; chains are rejected by [validate].
- * - Strict no-op without a rule. Unknown names (i.e. every name the app ships today,
- * because [RULES] is empty) are returned untouched: the requested input string is
+ * - Strict no-op without a rule. Unknown/current canonical names are returned untouched:
+ * the requested input string is
  * handed back byte-identical, never parse-then-reserialized.
  * - MCP names are never transformed. Anything starting with the mcp prefix is returned
  * verbatim — those are runtime-minted per-server names, not part of this table.
@@ -59,8 +62,8 @@ import me.rerere.ai.core.Tool
  *
  * ## Current state of the table
  *
- * [RULES] is intentionally EMPTY: this PR ships pure infrastructure. The first entry
- * lands only as the last step of a merge PR, once its canonical tool is registered.
+ * [RULES] now contains the first production composite migration: the six legacy
+ * read-only device-info names map to device_info(section=...). Other names remain strict no-op.
  */
 object ToolNameAliases {
 
@@ -95,12 +98,24 @@ object ToolNameAliases {
  val approvalName: String? = null,
  )
 
+ private fun deviceInfoSection(section: String): ArgsTransform = ArgsTransform { legacyArgs ->
+ require(legacyArgs is JsonObject) { "legacy device-info args must be a JSON object" }
+ buildJsonObject { put("section", section) }
+ }
+
  /**
- * Production rule table: legacyName -> rule. EMPTY in this PR.
+ * Production rule table: legacyName -> rule.
  * Invariants (enforced by [validate]): no blank names, no self-alias, no chains,
  * no mcp-prefixed keys or targets.
  */
- val RULES: Map<String, CompatibilityRule> = emptyMap()
+ val RULES: Map<String, CompatibilityRule> = mapOf(
+ "get_battery_status" to CompatibilityRule("device_info", deviceInfoSection("battery")),
+ "get_audio_info" to CompatibilityRule("device_info", deviceInfoSection("audio")),
+ "get_telephony_info" to CompatibilityRule("device_info", deviceInfoSection("telephony")),
+ "get_wifi_info" to CompatibilityRule("device_info", deviceInfoSection("wifi")),
+ "get_storage_info" to CompatibilityRule("device_info", deviceInfoSection("storage")),
+ "list_sensors" to CompatibilityRule("device_info", deviceInfoSection("sensors")),
+ )
 
  /**
  * The outcome of resolving one requested call.

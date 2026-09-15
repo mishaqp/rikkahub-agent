@@ -31,8 +31,6 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.local.BiometricResultBuffer
 import me.rerere.rikkahub.data.ai.tools.local.CameraResultBuffer
 import me.rerere.rikkahub.data.ai.tools.local.InteractiveToolStreamer
-import me.rerere.rikkahub.data.ai.tools.local.audioInfoTool
-import me.rerere.rikkahub.data.ai.tools.local.batteryTool
 import me.rerere.rikkahub.data.ai.tools.local.callLogTool
 import me.rerere.rikkahub.data.ai.tools.local.cameraPhotoTool
 import me.rerere.rikkahub.data.ai.tools.local.clickNodeTool
@@ -43,7 +41,6 @@ import me.rerere.rikkahub.data.ai.tools.local.getBrightnessTool
 import me.rerere.rikkahub.data.ai.tools.local.getVolumeTool
 import me.rerere.rikkahub.data.ai.tools.local.globalActionTool
 import me.rerere.rikkahub.data.ai.tools.local.listContactsTool
-import me.rerere.rikkahub.data.ai.tools.local.listSensorsTool
 import me.rerere.rikkahub.data.ai.tools.local.listSmsInboxTool
 import me.rerere.rikkahub.data.ai.tools.local.locationTool
 import me.rerere.rikkahub.data.ai.tools.local.longPressTool
@@ -65,15 +62,12 @@ import me.rerere.rikkahub.data.ai.tools.local.setVolumeTool
 import me.rerere.rikkahub.data.ai.tools.local.shareTool
 import me.rerere.rikkahub.data.ai.tools.local.speechToTextTool
 import me.rerere.rikkahub.data.ai.tools.local.stopMediaTool
-import me.rerere.rikkahub.data.ai.tools.local.storageTool
 import me.rerere.rikkahub.data.ai.tools.local.swipeTool
 import me.rerere.rikkahub.data.ai.tools.local.takeScreenshotTool
 import me.rerere.rikkahub.data.ai.tools.local.tapTool
-import me.rerere.rikkahub.data.ai.tools.local.telephonyInfoTool
 import me.rerere.rikkahub.data.ai.tools.local.toastTool
 import me.rerere.rikkahub.data.ai.tools.local.torchTool
 import me.rerere.rikkahub.data.ai.tools.local.vibrateTool
-import me.rerere.rikkahub.data.ai.tools.local.wifiInfoTool
 import me.rerere.rikkahub.data.ai.tools.local.deleteSshHostTool
 import me.rerere.rikkahub.data.ai.tools.local.forgetSshHostKeyTool
 import me.rerere.rikkahub.data.ai.tools.local.listSshHostsTool
@@ -105,6 +99,7 @@ import me.rerere.rikkahub.data.ai.tools.local.listFilesTool
 import me.rerere.rikkahub.data.ai.tools.local.readFileTool
 import me.rerere.rikkahub.data.ai.tools.local.writeBinaryFileTool
 import me.rerere.rikkahub.data.ai.tools.local.deleteFileTool
+import me.rerere.rikkahub.data.ai.tools.local.deviceInfoTool
 import me.rerere.rikkahub.data.ai.tools.local.moveFileTool
 import me.rerere.rikkahub.data.ai.tools.local.copyFileTool
 import me.rerere.rikkahub.data.ai.tools.local.createDirectoryTool
@@ -244,6 +239,7 @@ object LenientLocalToolListSerializer : KSerializer<List<LocalToolOption>> {
 }
 
 private val TOP_TOOL_EXAMPLES: Map<String, String> = mapOf(
+    "device_info" to "device_info(section=\"battery\")",
     "get_battery_status" to "get_battery_status()",
     "get_audio_info" to "get_audio_info()",
     "get_telephony_info" to "get_telephony_info()",
@@ -738,24 +734,21 @@ class LocalTools(
         if (options.contains(LocalToolOption.AskUser)) {
             tools.add(askUserTool)
         }
-        if (options.contains(LocalToolOption.Battery)) {
-            tools.add(batteryTool(context))
+        val deviceInfoSections = buildSet {
+            if (options.contains(LocalToolOption.Battery)) add("battery")
+            if (options.contains(LocalToolOption.AudioInfo)) add("audio")
+            if (options.contains(LocalToolOption.TelephonyInfo)) add("telephony")
+            if (options.contains(LocalToolOption.WifiInfo)) add("wifi")
+            if (options.contains(LocalToolOption.StorageInfo)) add("storage")
+            if (options.contains(LocalToolOption.Sensors)) add("sensors")
         }
-        if (options.contains(LocalToolOption.AudioInfo)) {
-            tools.add(audioInfoTool(context))
+        if (deviceInfoSections.isNotEmpty()) {
+            tools.add(deviceInfoTool(context, deviceInfoSections))
         }
-        if (options.contains(LocalToolOption.TelephonyInfo)) {
-            tools.add(telephonyInfoTool(context))
-        }
-        if (options.contains(LocalToolOption.WifiInfo)) {
-            tools.add(wifiInfoTool(context))
-        }
+        // Sensor streaming keeps its own schema; only the read-only sensor catalogue is folded
+        // into device_info(section="sensors").
         if (options.contains(LocalToolOption.Sensors)) {
-            tools.add(listSensorsTool(context))
             tools.add(readSensorTool(context))
-        }
-        if (options.contains(LocalToolOption.StorageInfo)) {
-            tools.add(storageTool(context))
         }
         if (options.contains(LocalToolOption.Toast)) {
             tools.add(toastTool(context, invocationContext, interactiveToolStreamer))

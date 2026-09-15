@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
@@ -22,8 +23,8 @@ import org.junit.Test
  *
  * Two groups:
  *
- * 1. Contract against the shipped (EMPTY) table: a strict byte-level no-op for every
- * call the app can emit today, so shipping this layer cannot change behaviour.
+ * 1. Contract against the shipped table: the six migrated device-info names resolve
+ * to device_info(section=...), while every unrelated name remains a strict byte-level no-op.
  * 2. Synthetic rules: the exact behaviour a future merge PR will rely on — one-hop
  * name+args resolution, transform failure meaning the call is refused, one shared
  * canonical loop signature, HARDLINE judging transformed args, canonical lookup and
@@ -56,17 +57,31 @@ class ToolNameAliasesTest {
  // ---- 1. Shipped table: strict no-op ---------------------------------------
 
  @Test
- fun `production rules table is empty`() {
- assertTrue(
- "ToolNameAliases.RULES must ship empty — this PR is infrastructure only",
- ToolNameAliases.RULES.isEmpty(),
+ fun `production rules contain exactly the six device info migrations`() {
+ val expected = mapOf(
+ "get_battery_status" to "battery",
+ "get_audio_info" to "audio",
+ "get_telephony_info" to "telephony",
+ "get_wifi_info" to "wifi",
+ "get_storage_info" to "storage",
+ "list_sensors" to "sensors",
  )
+ assertEquals(expected.keys, ToolNameAliases.RULES.keys)
+ assertTrue(ToolNameAliases.validate(ToolNameAliases.RULES).isEmpty())
+ expected.forEach { (legacy, section) ->
+ val resolved = ToolNameAliases.resolveCall(legacy, "{}")
+ assertEquals("device_info", resolved.canonicalName)
+ assertEquals(section, Json.parseToJsonElement(resolved.canonicalInput).jsonObject["section"]?.jsonPrimitive?.content)
+ assertEquals("device_info", resolved.approvalName)
+ assertNull(resolved.resolutionError)
+ assertTrue(resolved.aliased)
+ }
  }
 
  @Test
  fun `shipped calls are strict byte-level no-ops`() {
  listOf(
- "get_battery_status" to "{}",
+ "get_time_info" to "{}",
  "list_files" to "{\"path\":\"/sdcard\"}",
  "web_extract" to "{\"url\":\"https://example.com\"}",
  "shizuku_exec" to "{\"command\":\"id\"}",
@@ -218,8 +233,10 @@ class ToolNameAliasesTest {
 
  @Test
  fun `lookup finds the canonical tool`() {
- val tools = listOf(tool("files"), tool("web"))
- // Production table (empty): no rewrite today.
+ val tools = listOf(tool("files"), tool("web"), tool("device_info"))
+ // Production device-info aliases resolve to the real composite tool.
+ assertEquals("device_info", ToolNameAliases.resolveTool(tools, "get_battery_status")?.name)
+ // Unmigrated names are still untouched.
  assertNull(ToolNameAliases.resolveTool(tools, "list_files"))
  assertEquals("files", ToolNameAliases.resolveTool(tools, "files")?.name)
  // Synthetic: resolve, then find by canonical name (the runner pattern).

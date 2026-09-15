@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
@@ -79,6 +80,7 @@ import me.rerere.rikkahub.data.ai.ContextCompactionView
 import me.rerere.rikkahub.data.ai.TranslationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
@@ -1286,7 +1288,7 @@ class ChatService(
             // class doc's "persist boundaries only" contract. tool.execute() (up to 60s)
             // below runs UNLOCKED so a concurrent handleToolApproval/stopGeneration on this
             // conversation doesn't block on this rerun.
-            val (toolPart, tool) = mutexFor(conversationId).withLock {
+            val (toolPart, tool, resolvedCall) = mutexFor(conversationId).withLock {
                 // Re-resolve the session under the lock instead of trusting `session`
                 // pinned above: dropSession() (e.g. /new) removes it from the map
                 // regardless of refcount, so a racing caller could have dropped it and
@@ -1306,8 +1308,17 @@ class ChatService(
                     return RerunToolResult.Failure("tool has not completed its first run yet")
                 }
 
+                // Resolve the whole persisted call BEFORE policy and lookup. A future
+                // composite-tool migration can change both the tool name and its argument schema;
+                // HARDLINE must inspect the exact canonical call that would execute.
+                val resolvedCall = ToolNameAliases.resolveCall(toolPart.toolName, toolPart.input)
+                if (resolvedCall.resolutionError != null) {
+                    return RerunToolResult.Failure(
+                        "compatibility resolution failed: ${resolvedCall.resolutionError}"
+                    )
+                }
                 val hardlineReason = me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
-                    .checkTool(toolPart.toolName, toolPart.input)
+                    .checkTool(resolvedCall.canonicalName, resolvedCall.canonicalInput)
                 if (hardlineReason != null) {
                     return RerunToolResult.Failure("blocked: $hardlineReason")
                 }
@@ -1319,15 +1330,17 @@ class ChatService(
                 ) ?: return RerunToolResult.Failure("no chat model selected")
 
                 val tools = buildToolsForRerun(assistant, conversationId, conversation, model, settings)
-                val tool = tools.firstOrNull { it.name == toolPart.toolName }
+                val tool = tools.firstOrNull { it.name == resolvedCall.canonicalName }
                     ?: return RerunToolResult.Failure("tool '${toolPart.toolName}' is not available")
 
-                toolPart to tool
+                Triple(toolPart, tool, resolvedCall)
             }
 
             val startedAt = System.currentTimeMillis()
             val output = try {
-                withTimeoutOrNull(60_000L) { tool.execute(toolPart.inputAsJson()) }
+                withTimeoutOrNull(60_000L) {
+                    tool.execute(Json.parseToJsonElement(resolvedCall.canonicalInput))
+                }
                     ?: return RerunToolResult.Failure("timed out after 60s")
             } catch (c: CancellationException) {
                 throw c

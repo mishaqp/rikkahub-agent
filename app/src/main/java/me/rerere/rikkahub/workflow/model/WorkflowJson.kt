@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.booleanOrNull
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 
 /**
  * Phase 12 — strict JSON schema validator + parser/serializer.
@@ -127,10 +128,14 @@ object WorkflowJson {
                 ?: return ParseResult.Err("bad_action_shape", "action $idx is not an object")
             val toolName = ao["tool"]?.jsonPrimitive?.contentOrNull
                 ?: return ParseResult.Err("missing_tool", "action $idx missing 'tool'")
-            // knownToolNames is the assistant's currently-registered tool surface. Empty set is
-            // a sentinel meaning "skip the check" — used when reading stored definitions back
-            // from disk where we trust that what was persisted was already validated.
-            if (knownToolNames.isNotEmpty() && toolName !in knownToolNames) {
+            val args = ao["args"] as? JsonObject ?: buildJsonObject { }
+            // Resolve name and args before validating the current tool surface.
+            val resolved = ToolNameAliases.resolveCall(toolName, args)
+            if (resolved.resolutionError != null) {
+                return ParseResult.Err("compat_error", "action $idx: ${resolved.resolutionError}")
+            }
+            val canonicalToolName = resolved.canonicalName
+            if (knownToolNames.isNotEmpty() && canonicalToolName !in knownToolNames) {
                 return ParseResult.Err("unknown_tool",
                     "action $idx tool '$toolName' is not registered for this assistant")
             }
@@ -139,11 +144,10 @@ object WorkflowJson {
             // for v1 — without this guard, a malicious or hallucinated workflow definition
             // could trigger an unbounded chain across distinct workflow ids that the
             // per-workflow Mutex doesn't catch.
-            if (toolName == "workflow_run") {
+            if (canonicalToolName == "workflow_run") {
                 return ParseResult.Err("workflow_chaining_disabled",
                     "action $idx: workflow_run cannot be used as a workflow action (chaining is out-of-scope in v1)")
             }
-            val args = ao["args"] as? JsonObject ?: buildJsonObject { }
             val timeout = ao["timeout_seconds"]?.jsonPrimitive?.intOrNull ?: 60
             if (timeout < WorkflowConstants.MIN_ACTION_TIMEOUT_S
                 || timeout > WorkflowConstants.MAX_ACTION_TIMEOUT_S) {

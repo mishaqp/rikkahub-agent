@@ -12,6 +12,7 @@ import kotlinx.serialization.json.contentOrNull
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 
 /**
  * Parses + executes mode='direct' action sequences. Each action is a single
@@ -37,6 +38,7 @@ class DirectModeActionRunner(
         data class Failed(val errorMessage: String) : StepResult()
         data object TimedOut : StepResult()
         data class HardlineBlocked(val reason: String) : StepResult()
+        data class ResolutionError(val reason: String) : StepResult()
         /** The action's tool is not in the available-tools list at fire time (never
          *  registered, or the assistant disabled it after the job was created). */
         data class UnknownTool(val toolName: String) : StepResult()
@@ -59,6 +61,7 @@ class DirectModeActionRunner(
                 is StepResult.Failed         -> return SequenceResult("failed", "action $idx: ${result.errorMessage}")
                 is StepResult.TimedOut       -> return SequenceResult("timed_out", "action $idx: ${action.tool} exceeded 60s")
                 is StepResult.HardlineBlocked-> return SequenceResult("failed", "action $idx: hardline:${result.reason}")
+                is StepResult.ResolutionError -> return SequenceResult("failed", "action $idx: compat_error:${result.reason}")
                 // A direct-mode job validates its tool list at creation time, but the
                 // assistant's enabled-tools set can change afterwards. If a tool the job
                 // references is no longer in `availableTools` when the job fires, surface
@@ -76,15 +79,24 @@ class DirectModeActionRunner(
         action: Action,
         availableTools: List<Tool>,
     ): StepResult {
-        val hardlineReason = HardlineCommandGuard.checkTool(action.tool, action.args.toString())
+        // Resolve the whole persisted call before policy, lookup and execution.
+        val resolved = ToolNameAliases.resolveCall(action.tool, action.args)
+        if (resolved.resolutionError != null) {
+            Log.w(TAG, "direct-mode compat-resolution failed action $idx tool=${action.tool}: ${resolved.resolutionError}")
+            return StepResult.ResolutionError(resolved.resolutionError)
+        }
+        val hardlineReason = HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput)
         if (hardlineReason != null) {
             Log.w(TAG, "direct-mode hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
             return StepResult.HardlineBlocked(hardlineReason)
         }
-        val tool = availableTools.find { it.name == action.tool }
+        val tool = availableTools.firstOrNull { it.name == resolved.canonicalName }
             ?: return StepResult.UnknownTool(action.tool)
+        val canonicalArgs = runCatching { json.parseToJsonElement(resolved.canonicalInput) }.getOrElse {
+            return StepResult.ResolutionError("canonical args unparseable: ${it.message}")
+        }
         return try {
-            val out = withTimeoutOrNull(60_000L) { tool.execute(action.args) }
+            val out = withTimeoutOrNull(60_000L) { tool.execute(canonicalArgs) }
             if (out == null) StepResult.TimedOut else StepResult.Success(out)
         } catch (c: kotlinx.coroutines.CancellationException) {
             // Don't swallow cancellation — re-throw so structured concurrency can unwind

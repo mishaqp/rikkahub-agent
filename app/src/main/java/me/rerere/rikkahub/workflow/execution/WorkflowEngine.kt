@@ -11,6 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
+import me.rerere.rikkahub.data.ai.tools.ToolNameAliases
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.workflow.condition.ConditionEvaluator
@@ -353,18 +354,25 @@ class WorkflowActionRunner {
     suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
         val outputs = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
-            val argsJson = action.args.toString()
-            val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
+            val resolved = ToolNameAliases.resolveCall(action.tool, action.args)
+            if (resolved.resolutionError != null) {
+                logSafe("workflow compat-resolution failed action $idx tool=${action.tool}: ${resolved.resolutionError}")
+                return RunResult(false, "action $idx: compat_error:${resolved.resolutionError}", outputs.joinToString("\n"))
+            }
+            val hardlineReason = HardlineCommandGuard.checkTool(resolved.canonicalName, resolved.canonicalInput)
             if (hardlineReason != null) {
                 logSafe("workflow hardline-blocked action $idx tool=${action.tool}: $hardlineReason")
                 return RunResult(success = false,
                     error = "action $idx: hardline:$hardlineReason",
                     summary = outputs.joinToString("\n"))
             }
-            val tool = availableTools.find { it.name == action.tool }
+            val tool = availableTools.firstOrNull { it.name == resolved.canonicalName }
                 ?: return RunResult(false, "action $idx: unknown_tool:${action.tool}", outputs.joinToString("\n"))
+            val canonicalArgs = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(resolved.canonicalInput) }.getOrElse {
+                return RunResult(false, "action $idx: compat_error:canonical args unparseable", outputs.joinToString("\n"))
+            }
             val out = try {
-                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(action.args) }
+                withTimeoutOrNull(action.timeoutSeconds * 1000L) { tool.execute(canonicalArgs) }
             } catch (c: kotlinx.coroutines.CancellationException) {
                 // Don't swallow cancellation — re-throw so structured concurrency can
                 // unwind the fire (e.g. the engine scope is cancelled on shutdown). The

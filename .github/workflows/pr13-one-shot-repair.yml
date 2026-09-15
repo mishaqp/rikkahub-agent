@@ -1,0 +1,40 @@
+name: PR13 one-shot source repair
+
+on:
+  push:
+    branches:
+      - refactor/tool-name-compat-v2
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply guarded repair
+        run: python3 .github/scripts/pr13-one-shot-repair.py
+
+      - name: Verify patch scope
+        run: |
+          git diff --check
+          git status --short
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          test "$changed" = $'app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt\napp/src/main/java/me/rerere/rikkahub/service/ChatService.kt'
+
+      - name: Commit repaired sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt \
+                  app/src/main/java/me/rerere/rikkahub/service/ChatService.kt
+          git commit -m "fix(tools): repair call-level compatibility integration"
+          git push origin HEAD:${GITHUB_REF_NAME}

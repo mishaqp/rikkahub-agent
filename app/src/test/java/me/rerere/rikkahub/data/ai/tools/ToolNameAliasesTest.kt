@@ -167,7 +167,7 @@ class ToolNameAliasesTest {
  @Test
  fun `unparseable legacy args with a matching rule forbid execution`() {
  val rules = rulesOf("list_files" to listFilesRule)
- val resolved = ToolNameAliases.resolveRawCall("list_files", "not-json", rules)
+ val resolved = ToolNameAliases.resolveRawCall("list_files", "{", rules)
  assertNotNull(resolved.resolutionError)
  assertTrue(resolved.resolutionError!!.startsWith("args_unparseable"))
  }

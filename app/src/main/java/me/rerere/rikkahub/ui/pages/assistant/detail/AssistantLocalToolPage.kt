@@ -172,6 +172,16 @@ private fun AssistantLocalToolContent(
         )
     }
     val enabledDeviceInfoCount = deviceInfoOptions.count { it in assistant.localTools }
+    var deviceControlExpanded by remember { mutableStateOf(false) }
+    val deviceControlOptions = remember {
+        setOf(
+            LocalToolOption.Torch,
+            LocalToolOption.Vibrate,
+            LocalToolOption.Brightness,
+            LocalToolOption.Volume,
+        )
+    }
+    val enabledDeviceControlCount = deviceControlOptions.count { it in assistant.localTools }
 
     val cronHintText = stringResource(R.string.assistant_page_local_tools_cron_jobs_toast_hint)
     val termuxCommand = stringResource(R.string.assistant_page_local_tools_termux_postgrant_command)
@@ -501,71 +511,81 @@ private fun AssistantLocalToolContent(
             )
         }
 
-        // Hardware control section
-        Text(
-            text = stringResource(R.string.assistant_page_local_tools_section_hardware),
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(start = 16.dp, top = 8.dp)
-        )
+        // The model sees one device_control composite schema, while the UI keeps the
+        // four granular capability toggles behind the same expandable pattern as Device Info.
         CardGroup {
             item(
+                onClick = { deviceControlExpanded = !deviceControlExpanded },
                 headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_torch_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_torch_desc))
+                    Text(stringResource(R.string.assistant_page_local_tools_section_hardware))
                 },
                 trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Torch),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Torch, it) }
+                    Text(
+                        "$enabledDeviceControlCount/${deviceControlOptions.size}  " +
+                            if (deviceControlExpanded) "▲" else "▼"
                     )
-                }
+                },
             )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_vibrate_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_vibrate_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Vibrate),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Vibrate, it) }
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_brightness_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_brightness_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Brightness),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Brightness, it) },
-                        requiresWriteSettings = true,
-                    )
-                }
-            )
-            item(
-                headlineContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_volume_title))
-                },
-                supportingContent = {
-                    Text(stringResource(R.string.assistant_page_local_tools_volume_desc))
-                },
-                trailingContent = {
-                    PermissionedSwitch(
-                        checked = assistant.localTools.contains(LocalToolOption.Volume),
-                        onCheckedChange = { toggleLocalTool(LocalToolOption.Volume, it) },
-                        requiresDndAccess = true,
-                    )
-                }
-            )
+            if (deviceControlExpanded) {
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_torch_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_torch_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Torch),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Torch, it) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_vibrate_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_vibrate_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Vibrate),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Vibrate, it) }
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_brightness_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_brightness_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Brightness),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Brightness, it) },
+                            requiresWriteSettings = true,
+                        )
+                    }
+                )
+                item(
+                    headlineContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_volume_title))
+                    },
+                    supportingContent = {
+                        Text(stringResource(R.string.assistant_page_local_tools_volume_desc))
+                    },
+                    trailingContent = {
+                        PermissionedSwitch(
+                            checked = assistant.localTools.contains(LocalToolOption.Volume),
+                            onCheckedChange = { toggleLocalTool(LocalToolOption.Volume, it) },
+                            requiresDndAccess = true,
+                        )
+                    }
+                )
+            }
         }
 
         // Personal data section

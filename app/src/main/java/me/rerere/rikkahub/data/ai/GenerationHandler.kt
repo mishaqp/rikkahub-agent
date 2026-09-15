@@ -26,6 +26,9 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
@@ -364,6 +367,36 @@ private val FRESHNESS_TTL_MS_BY_TOOL: Map<String, Long> = mapOf(
     "list_active_notifications" to 5_000L,
     "list_jobs" to 60_000L,
 )
+
+/**
+ * Composite tools share one provider-visible name across read and write actions. Loop-guard
+ * policy must still distinguish the old read identities: otherwise device_info/device_control
+ * reads lose freshness TTLs, while treating all device_control calls as read-only would let
+ * repeated writes reset incorrectly. The signature stays canonical; only the policy bucket is
+ * projected back to the legacy read name.
+ */
+internal fun loopGuardPolicyToolName(canonicalToolName: String, canonicalInput: String): String {
+    fun selector(key: String): String? = runCatching {
+        Json.parseToJsonElement(canonicalInput.ifBlank { "{}" })
+            .jsonObject[key]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+
+    return when (canonicalToolName) {
+        "device_info" -> when (selector("section")) {
+            "battery" -> "get_battery_status"
+            "audio" -> "get_audio_info"
+            "telephony" -> "get_telephony_info"
+            "wifi" -> "get_wifi_info"
+            "storage" -> "get_storage_info"
+            else -> canonicalToolName
+        }
+        "device_control" -> when (val action = selector("action")) {
+            "get_brightness", "get_volume" -> action
+            else -> canonicalToolName
+        }
+        else -> canonicalToolName
+    }
+}
 
 /**
  * UI-observation tools that read screen/device state without changing it. Used by the loop
@@ -878,7 +911,10 @@ class GenerationHandler(
                                 .map {
                                     val resolvedPrior = ToolNameAliases.resolveCall(it.toolName, it.input)
                                     PriorToolCall(
-                                        resolvedPrior.canonicalName,
+                                        loopGuardPolicyToolName(
+                                            resolvedPrior.canonicalName,
+                                            resolvedPrior.canonicalInput,
+                                        ),
                                         resolvedPrior.signature,
                                         epochMs,
                                     )
@@ -886,7 +922,10 @@ class GenerationHandler(
                         }
                         val loopDecision = LoopGuard.evaluate(
                             priorCalls = priorCalls,
-                            toolName = canonicalToolName,
+                            toolName = loopGuardPolicyToolName(
+                                canonicalToolName,
+                                resolvedCall.canonicalInput,
+                            ),
                             signature = signature,
                             nowMs = System.currentTimeMillis(),
                         )

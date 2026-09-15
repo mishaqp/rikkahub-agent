@@ -37,8 +37,6 @@ import me.rerere.rikkahub.data.ai.tools.local.clickNodeTool
 import me.rerere.rikkahub.data.ai.tools.local.downloadTool
 import me.rerere.rikkahub.data.ai.tools.local.fingerprintTool
 import me.rerere.rikkahub.data.ai.tools.local.findNodeTool
-import me.rerere.rikkahub.data.ai.tools.local.getBrightnessTool
-import me.rerere.rikkahub.data.ai.tools.local.getVolumeTool
 import me.rerere.rikkahub.data.ai.tools.local.globalActionTool
 import me.rerere.rikkahub.data.ai.tools.local.listContactsTool
 import me.rerere.rikkahub.data.ai.tools.local.listSmsInboxTool
@@ -57,8 +55,6 @@ import me.rerere.rikkahub.data.ai.tools.local.readWindowTreeTool
 import me.rerere.rikkahub.data.ai.tools.local.scrollTool
 import me.rerere.rikkahub.data.ai.tools.local.searchContactsTool
 import me.rerere.rikkahub.data.ai.tools.local.searchSmsTool
-import me.rerere.rikkahub.data.ai.tools.local.setBrightnessTool
-import me.rerere.rikkahub.data.ai.tools.local.setVolumeTool
 import me.rerere.rikkahub.data.ai.tools.local.shareTool
 import me.rerere.rikkahub.data.ai.tools.local.speechToTextTool
 import me.rerere.rikkahub.data.ai.tools.local.stopMediaTool
@@ -66,8 +62,6 @@ import me.rerere.rikkahub.data.ai.tools.local.swipeTool
 import me.rerere.rikkahub.data.ai.tools.local.takeScreenshotTool
 import me.rerere.rikkahub.data.ai.tools.local.tapTool
 import me.rerere.rikkahub.data.ai.tools.local.toastTool
-import me.rerere.rikkahub.data.ai.tools.local.torchTool
-import me.rerere.rikkahub.data.ai.tools.local.vibrateTool
 import me.rerere.rikkahub.data.ai.tools.local.deleteSshHostTool
 import me.rerere.rikkahub.data.ai.tools.local.forgetSshHostKeyTool
 import me.rerere.rikkahub.data.ai.tools.local.listSshHostsTool
@@ -100,6 +94,7 @@ import me.rerere.rikkahub.data.ai.tools.local.readFileTool
 import me.rerere.rikkahub.data.ai.tools.local.writeBinaryFileTool
 import me.rerere.rikkahub.data.ai.tools.local.deleteFileTool
 import me.rerere.rikkahub.data.ai.tools.local.deviceInfoTool
+import me.rerere.rikkahub.data.ai.tools.local.deviceControlTool
 import me.rerere.rikkahub.data.ai.tools.local.moveFileTool
 import me.rerere.rikkahub.data.ai.tools.local.copyFileTool
 import me.rerere.rikkahub.data.ai.tools.local.createDirectoryTool
@@ -240,6 +235,7 @@ object LenientLocalToolListSerializer : KSerializer<List<LocalToolOption>> {
 
 private val TOP_TOOL_EXAMPLES: Map<String, String> = mapOf(
     "device_info" to "device_info(section=\"battery\")",
+    "device_control" to "device_control(action=\"set_torch\", on=true)",
     "get_battery_status" to "get_battery_status()",
     "get_audio_info" to "get_audio_info()",
     "get_telephony_info" to "get_telephony_info()",
@@ -759,19 +755,27 @@ class LocalTools(
         if (options.contains(LocalToolOption.Share)) {
             tools.add(shareTool(context, invocationContext, interactiveToolStreamer))
         }
-        if (options.contains(LocalToolOption.Torch)) {
-            tools.add(torchTool(context))
+        val deviceControlActions = buildSet {
+            if (options.contains(LocalToolOption.Torch)) add("set_torch")
+            if (options.contains(LocalToolOption.Vibrate)) add("vibrate")
+            if (options.contains(LocalToolOption.Brightness)) {
+                add("get_brightness")
+                add("set_brightness")
+            }
+            if (options.contains(LocalToolOption.Volume)) {
+                add("get_volume")
+                add("set_volume")
+            }
         }
-        if (options.contains(LocalToolOption.Vibrate)) {
-            tools.add(vibrateTool(context))
-        }
-        if (options.contains(LocalToolOption.Brightness)) {
-            tools.add(getBrightnessTool(context))
-            tools.add(setBrightnessTool(context, invocationContext, interactiveToolStreamer))
-        }
-        if (options.contains(LocalToolOption.Volume)) {
-            tools.add(getVolumeTool(context))
-            tools.add(setVolumeTool(context, invocationContext, interactiveToolStreamer))
+        if (deviceControlActions.isNotEmpty()) {
+            tools.add(
+                deviceControlTool(
+                    context = context,
+                    enabledActions = deviceControlActions,
+                    invocationContext = invocationContext,
+                    streamer = interactiveToolStreamer,
+                )
+            )
         }
         if (options.contains(LocalToolOption.MediaPlayer)) {
             tools.add(playMediaTool(context, invocationContext, interactiveToolStreamer))
